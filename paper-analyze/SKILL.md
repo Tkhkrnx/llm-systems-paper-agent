@@ -373,7 +373,7 @@ status: analyzed
 
 **方式1：插入论文中的图（优先）**
 ```
-![架构图|800](images/pageX_figY.pdf)
+![[pageX_figY.pdf|800]]
 
 > 图1：[架构描述，包括图中各个部分的含义和它们之间的关系]
 ```
@@ -436,7 +436,7 @@ Canvas 创建步骤：
 
 **方式1：插入论文中的图（优先）**
 ```
-![架构图|800](images/pageX_figY.pdf)
+![[pageX_figY.pdf|800]]
 
 > 图1：[架构描述，包括图中各个部分的含义和它们之间的关系]
 ```
@@ -509,7 +509,7 @@ Canvas 创建步骤：
 ### 实验结果图
 [插入论文中的实验结果图]
 
-![实验结果图|800](images/实验结果.pdf)
+![[experiment_results.pdf|800]]
 
 > 图2：[图描述]
 **注意**：图片文件名必须与实际文件名匹配（从arXiv提取的图片通常是`.pdf`格式）
@@ -615,14 +615,12 @@ python3 run_paper_analysis.py [ID] [TITLE] [AUTHORS] [DOMAIN] --local-pdf /tmp/p
 #### 优势2：[优势名称]
 [类似格式]
 
-#### 优势3：[优势名
-
-## 重要规则称]
+#### 优势3：[优势名称]
 [类似格式]
 
 ### 局限性分析
 
-##所有 局都限用上限名称]
+#### 局限1：[局限名称]
 - **描述**：[详细描述该局限性]
 - **表现**：[在实际中的表现]
 - **原因**：[产生该局限的根本原因]
@@ -632,7 +630,10 @@ python3 run_paper_analysis.py [ID] [TITLE] [AUTHORS] [DOMAIN] --local-pdf /tmp/p
 #### 局限2：[局限名称]
 [类似格式]
 
-#### 局限3全面分析名称]包含所有部分，图文并茂场景分析
+#### 局限3：[局限名称]
+[类似格式]
+
+### 适用性与场景分析
 
 #### 适用场景
 - **场景1**：[场景描述]
@@ -900,13 +901,44 @@ python3 run_paper_analysis.py [ID] [TITLE] [AUTHORS] [DOMAIN] --local-pdf /tmp/p
 
 - **保留用户现有笔记** - 不要覆盖手动笔记
 - **使用全面分析** - 涵盖方法论、实验、价值评估
-- **提供中文内容** - 翻译和解释用中文
+- **根据 `$LANGUAGE` 设置选择语言** - `"en"` 用英文写笔记，`"zh"` 用中文写笔记（section headers、content 都要匹配）
 - **引用相关工作** - 建立连接到现有知识库
 - **客观评分** - 使用一致的评分标准
 - **更新知识图谱** - 维护论文间关系
 - **图文并茂** - 论文中的所有图都要用上（核心架构图、方法图、实验结果图等）
 - **优雅处理错误** - 如果一个源失败则继续
 - **管理token使用** - 全面但不超出token限制
+
+### Obsidian 格式规则（必须遵守！）
+
+1. **图片嵌入**：**必须使用** `![[filename.png|800]]`，**禁止使用** `![alt](path%20encoded)`
+   - Obsidian 不支持 URL 编码路径（`%20`, `%26` 等不工作）
+   - Obsidian 会自动在 vault 中搜索文件名，无需写完整路径
+2. **Wikilink 必须用 display alias**：`[[File_Name|Display Title]]`，禁止 bare `[[File_Name]]`
+   - 下划线文件名直接显示会很丑
+3. **不要用 `---` 作为"无数据"占位符**：使用 `--` 代替（`---` 会被 Obsidian 解析为分隔线）
+4. **机构/Affiliation 提取**：从 arXiv 源码包的 `.tex` 文件提取 `\author`/`\affiliation` 字段；若不可用，标 `--`
+
+### 双语 Section Headers 对照表
+
+根据 `$LANGUAGE` 设置选择对应语言的 section header：
+
+| Chinese (`zh`) | English (`en`) |
+|---|---|
+| 核心信息 | Core Information |
+| 摘要翻译 | Abstract & Translation |
+| 研究背景与动机 | Research Background & Motivation |
+| 研究问题 | Research Problem |
+| 方法概述 | Method Overview |
+| 实验结果 | Experimental Results |
+| 深度分析 | In-Depth Analysis |
+| 与相关论文对比 | Comparison with Related Work |
+| 技术路线定位 | Technical Roadmap |
+| 未来工作建议 | Future Work |
+| 我的综合评价 | Assessment |
+| 我的笔记 | My Notes |
+| 相关论文 | Related Papers |
+| 外部资源 | External Resources |
 
 ## 分析标准
 
@@ -1072,20 +1104,10 @@ python3 run_paper_analysis.py [ID] [TITLE] [AUTHORS] [DOMAIN] --local-pdf /tmp/p
    ```
    **Obsidian对YAML格式要求严格，缺少引号会导致frontmatter无法正常显示！**
 
-2. **图片路径**：使用相对路径`images/xxx`（不指定扩展名，Obsidian会自动识别）
-   - **重要**：从arXiv提取的图片通常是`.pdf`格式，Obsidian可以直接显示PDF图片
-   - 图片路径应使用实际文件名，如`images/loss_curve.pdf`或`images/figure1.png`
-   - **禁止 URL 编码**：所有图片路径必须使用原始字符，**不得**对空格、`&` 等做 percent-encoding（如 `%20`、`%26`）。Obsidian 无法识别 URL 编码的本地路径。
-3. **wikilinks**：使用`[[论文名]]`格式
+2. **图片嵌入**：**必须使用 Obsidian wikilink 语法** `![[filename.png|800]]`
+   - **禁止使用** `![alt](path%20encoded)` — URL 编码在 Obsidian 中不工作
+   - Obsidian 会自动搜索 vault 中的文件名，无需写完整路径
+   - 从arXiv提取的图片可能是 `.pdf` 或 `.png` 格式
+3. **wikilinks**：必须使用 display alias `[[File_Name|Display Title]]`，禁止 bare `[[File_Name]]`
 4. **领域推断**：根据论文内容自动推断
-5. **相关论文**：在笔记中引用`[[相关论文]]`，图谱会自动创建边
-
-## 重要规则
-
-## 关键特性
-
-**图文并茂**：论文中的所有图片都要用上
-- **保存到正确位置**：`20_Research/Papers/[领域]/[论文标题]/images/`
-- **图片索引**：生成`images/index.md`索引所有图片
-- **与start-my-day区别**：paper-analyze用于深度分析单篇论文
-- **全面分析**：包含所有部分，图文并茂
+5. **相关论文**：在笔记中引用 `[[path/to/note|Paper Title]]`

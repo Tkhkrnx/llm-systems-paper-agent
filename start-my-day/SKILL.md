@@ -17,12 +17,26 @@ The config file should be located at: `$OBSIDIAN_VAULT_PATH/99_System/Config/res
 At the start of execution, read the config file to detect the language setting:
 
 ```bash
+# Resolve OBSIDIAN_VAULT_PATH if not set in the current session
+# Claude Code bash sessions do not source ~/.zshrc automatically
+if [ -z "$OBSIDIAN_VAULT_PATH" ]; then
+    [ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null || true
+    [ -f "$HOME/.bash_profile" ] && source "$HOME/.bash_profile" 2>/dev/null || true
+fi
+
 # Read language from config
 LANGUAGE=$(grep -E "^\s*language:" "$OBSIDIAN_VAULT_PATH/99_System/Config/research_interests.yaml" | awk '{print $2}' | tr -d '"')
 
 # Default to Chinese if not set
 if [ -z "$LANGUAGE" ]; then
     LANGUAGE="zh"
+fi
+
+# Set note filename suffix based on language
+if [ "$LANGUAGE" = "en" ]; then
+    NOTE_SUFFIX="paper-recommendations"
+else
+    NOTE_SUFFIX="论文推荐"
 fi
 ```
 
@@ -219,23 +233,38 @@ tags: ["llm-generated", "daily-paper-recommend"]
 
 #### 4.2.1 今日概览（放在论文列表之前）
 
-在论文列表之前，添加一个"今日概览"部分，总结今日推荐论文的整体情况：
+在论文列表之前，添加一个概览部分，总结今日推荐论文的整体情况。
 
+**根据 `$LANGUAGE` 设置选择语言：**
+
+**English (`language: "en"`)**:
+```markdown
+## Today's Overview
+
+Today's {paper_count} recommended papers focus on **{direction1}**, **{direction2}**, and **{direction3}**.
+
+- **Overall Trends**: {summary of research trends}
+- **Quality Distribution**: Scores range from {min}-{max}, {quality assessment}.
+- **Research Hotspots**:
+  - **{hotspot1}**: {description}
+  - **{hotspot2}**: {description}
+  - **{hotspot3}**: {description}
+- **Reading Suggestions**: {reading order recommendations}
+```
+
+**Chinese (`language: "zh"`)**:
 ```markdown
 ## 今日概览
 
 今日推荐的{论文数量}篇论文主要聚焦于**{主要研究方向1}**、**{主要研究方向2}**和**{主要研究方向3}**等前沿方向。
 
-- **总体趋势**：{总结今日论文的整体研究趋势，如多模态模型推理能力、大模型高效推理优化等}
-
+- **总体趋势**：{总结今日论文的整体研究趋势}
 - **质量分布**：今日推荐的论文评分在 {最低分}-{最高分} 之间，{整体质量评价}。
-
 - **研究热点**：
   - **{热点1}**：{简要描述}
   - **{热点2}**：{简要描述}
   - **{热点3}**：{简要描述}
-
-- **阅读建议**：{给出阅读顺序建议，如建议先阅读某篇了解某方向，再关注某篇的方法等}
+- **阅读建议**：{给出阅读顺序建议}
 ```
 
 **说明**：
@@ -247,14 +276,37 @@ tags: ["llm-generated", "daily-paper-recommend"]
 
 所有论文按评分从高到低排列，使用统一格式
 
-**当 `language: "zh"` 时使用中文格式**：
+**根据 `$LANGUAGE` 设置选择标签语言：**
+
+**English (`language: "en"`)**:
 ```markdown
-### [[论文名字]]
+### [[Note_Filename|Paper Title as Displayed]]
+- **Authors**: [author list]
+- **Affiliation**: [institution names, extracted from paper source or arXiv page]
+- **Links**: [arXiv](url) | [PDF](url)
+- **Source**: arXiv
+- **Note**: [[existing_note_path|short title]] or --
+
+**One-line Summary**: [one sentence summarizing the core contribution]
+
+**Core Contributions**:
+- [contribution 1]
+- [contribution 2]
+- [contribution 3]
+
+**Key Results**: [most important results from abstract]
+
+---
+```
+
+**Chinese (`language: "zh"`)**:
+```markdown
+### [[Note_Filename|论文标题显示名]]
 - **作者**：[作者列表]
-- **机构**：[机构名称]
+- **机构**：[机构名称，从论文源码或 arXiv 页面提取]
 - **链接**：[arXiv](链接) | [PDF](链接)
 - **来源**：[arXiv]
-- **笔记**：[[已有笔记路径]] 或 —
+- **笔记**：[[已有笔记路径|简称]] 或 --
 
 **一句话总结**：[一句话概括论文的核心贡献]
 
@@ -268,31 +320,11 @@ tags: ["llm-generated", "daily-paper-recommend"]
 ---
 ```
 
-**当 `language: "en"` 时使用英文格式**：
-```markdown
-### [[paper_note_filename|Paper Title]]
-- **Authors**: [author list]
-- **Affiliation**: [affiliation or "Not specified"]
-- **Links**: [arXiv](link) | [PDF](link)
-- **Source**: arXiv
-- **Notes**: [[existing_note_path]] or —
-
-**One-line Summary**: [one-line summary of core contribution]
-
-**Core Contributions**:
-- [Contribution 1]
-- [Contribution 2]
-- [Contribution 3]
-
-**Key Results**: [most important results from abstract]
-
----
-```
-
-**说明**：
-- 论文名称使用 wikilink 格式：`[[论文名字]]`
-- 对于前三篇论文，论文名字会关联到详细报告
-- 对于其他论文，论文名字可以作为wikilink占位符，方便以后创建笔记
+**重要格式规则**：
+- **Wikilink 必须使用 display alias**：`[[File_Name|Display Title]]`，不要使用 bare `[[File_Name]]`（下划线会直接显示，影响阅读）
+- **图片必须使用 Obsidian wikilink 嵌入语法**：`![[filename.png|600]]`，**禁止**使用 `![alt](path%20encoded)` 格式（URL 编码在 Obsidian 中不工作）
+- **机构信息**：从论文 TeX 源码的 `\author` 或 `\affiliation` 字段提取；若 arXiv API 未提供，从下载的源码包读取
+- **不要使用 `---` 作为"无数据"占位符**：使用 `--` 代替（三个短横线会被 Obsidian 解析为分隔线）
 
 #### 4.2.3 前三篇论文插入图片和调用详细分析
 
@@ -324,7 +356,7 @@ tags: ["llm-generated", "daily-paper-recommend"]
 
 **步骤2：在推荐笔记中插入图片和链接**
 
-**当 `language: "zh"` 时（如果已有笔记）**：
+**如果已有笔记**：
 ```markdown
 ### [[已有论文名称]]
 - **作者**：[作者列表]
@@ -336,85 +368,47 @@ tags: ["llm-generated", "daily-paper-recommend"]
 
 **一句话总结**：[一句话概括论文的核心贡献]
 
-![现有图片|600](现有图片路径)
+![[existing_image_filename.png|600]]
 
 **核心贡献/观点**：
 ...
 ```
 
-**当 `language: "zh"` 时（如果没有笔记）**：
+**如果没有笔记**：
 ```markdown
-### [[论文名字]]
+### [[Note_Filename|Paper Title Display Name]]
 - **作者**：[作者列表]
 - **机构**：[机构名称]
 - **链接**：[arXiv](链接) | [PDF](链接)
 - **来源**：[arXiv]
-- **详细报告**：[[详细报告路径]] (自动生成)
+- **详细报告**：[[20_Research/Papers/[domain]/[note_filename]|Short Title]] (自动生成)
 
 **一句话总结**：[一句话概括论文的核心贡献]
 
-![新提取的图片|600](新图片路径)
+![[paperID_fig1.png|600]]
 
 **核心贡献/观点**：
 ...
 ```
 
-**当 `language: "en"` 时（如果已有笔记）**：
-```markdown
-### [[paper_note_filename|Paper Title]]
-- **Authors**: [author list]
-- **Affiliation**: [affiliation or "Not specified"]
-- **Links**: [arXiv](link) | [PDF](link)
-- **Source**: arXiv
-- **Detailed Report**: [[existing_note_path]]
-- **Notes**: Existing detailed analysis
-
-**One-line Summary**: [one-line summary]
-
-![existing image|600](existing_image_path)
-
-**Core Contributions**:
-...
-```
-
-**当 `language: "en"` 时（如果没有笔记）**：
-```markdown
-### [[paper_note_filename|Paper Title]]
-- **Authors**: [author list]
-- **Affiliation**: [affiliation or "Not specified"]
-- **Links**: [arXiv](link) | [PDF](link)
-- **Source**: arXiv
-- **Detailed Report**: [[detailed_report_path]] (auto-generated)
-
-**One-line Summary**: [one-line summary]
-
-![new extracted image|600](new_image_path)
-
-**Core Contributions**:
-...
-```
-
-**图片说明**：
-- 图片路径：`20_Research/Papers/[论文分类]/images/[论文ID]_fig1.png`
-- 宽度设置为 600px
-- 自动提取，无需手动操作
-- **禁止 URL 编码**：Obsidian 的图片语法 `![alt|600](path)` 必须使用原始路径，**不得**对空格、`&` 等字符做 percent-encoding。
-  - 正确：`![img|600](20_Research/Papers/Multimodal & Vision-Language/ThinkJEPA/images/arch_page1.png)`
-  - 错误：`![img|600](20_Research/Papers/Multimodal%20%26%20Vision-Language/ThinkJEPA/images/arch_page1.png)`
-  - 此规则同样适用于 wikilink 以外的所有 markdown 图片引用路径
+**图片格式规则（重要！）**：
+- **必须使用 Obsidian wikilink 嵌入语法**：`![[filename.png|600]]`
+- **禁止使用 markdown 图片语法**：~~`![alt](path%20with%20encoding)`~~ — URL 编码（`%20`, `%26`）在 Obsidian 中不工作
+- 图片文件名示例：`2603.24124_fig1.png`
+- Obsidian 会自动在 vault 中搜索匹配的文件名，无需写完整路径
 
 **详细报告说明**：
 - 报告路径：`20_Research/Papers/[论文分类]/[note_filename].md`
-- **重要**：使用 JSON 中的 `note_filename` 字段（而非原始标题）拼接 wikilink，确保与 `generate_note.py` 创建的文件名一致
-  - 正确：`[[20_Research/Papers/大模型/Hypothesis-Conditioned_Query_Rewriting_for_Decision-Useful_Retrieval]]`
-  - 错误：`[[20_Research/Papers/大模型/Hypothesis-Conditioned Query Rewriting for Decision-Useful Retrieval]]`
-- 在"详细报告"字段显示 wikilink：`- **详细报告**：[[20_Research/Papers/[domain]/[note_filename]]]`
-- **论文分类（domain）命名规则**：domain 名称必须与 `paper-analyze` 实际创建的目录名完全一致，**不得截断**。例如：
-  - 正确：`[[20_Research/Papers/Computational Pathology/ReconMIL_...]]`（保留完整域名）
-  - 错误：`[[20_Research/Papers/Computational]]`（截断了 "Pathology" 部分）
-  - 正确：`[[20_Research/Papers/Foundation Models & LLM/...]]`
-  - 错误：`[[20_Research/Papers/Foundation]]`（截断了 "Models & LLM" 部分）
-- 详细报告由 `paper-analyze` 自动生成，包含完整的论文分析
+- **重要**：使用 JSON 中的 `note_filename` 字段拼接 wikilink
+- **必须使用 display alias**：`[[20_Research/Papers/[domain]/[note_filename]|Short Title]]`
+  - 正确：`[[20_Research/Papers/大模型/Hypothesis-Conditioned_Query_Rewriting|Hypothesis-Conditioned Query Rewriting]]`
+  - 错误：`[[20_Research/Papers/大模型/Hypothesis-Conditioned_Query_Rewriting_for_Decision-Useful_Retrieval]]`（下划线直接显示，不美观）
+- 详细报告由 `paper-analyze` 自动生成
+
+**机构/Affiliation 提取**：
+- 从下载的 arXiv 源码包（`.tar.gz`）中的 `.tex` 文件提取 `\author` 和 `\affiliation` 字段
+- 若源码不可用，从 arXiv 页面 HTML 提取
+- 若仍无法获取，标记为 `--`（使用两个短横线，**不要用三个** `---`，因为 Obsidian 会将其解析为分隔线）
 
 ## 步骤5：自动链接关键词（可选）
 

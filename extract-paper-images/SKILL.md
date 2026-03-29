@@ -67,8 +67,35 @@ python "scripts/extract_images.py" \
 
 **PDF直接提取的问题**：
 1. **Logo等非核心图片**：PDF中的logo、图标、装饰元素被当成图片
-2. **矢量图无法识别**：论文中的架构图可能是LaTeX矢量图，不是独立图片对象
+2. **矢量图无法识别**：论文中的架构图可能是LaTeX矢量图（TikZ/PGFplots），不是独立图片对象
 3. **多层PDF结构**：实验结果图可能是复杂渲染对象
+
+### 优先级3：TikZ/PGFplots 矢量图处理（重要补充！）
+
+**当源码包中无图片文件且 PDF 中无嵌入式图片时**（常见于纯 TikZ 论文）：
+
+1. **检测 TikZ 论文**：在 `.tex` 文件中搜索 `\begin{tikzpicture}` 或 `\usepackage{pgfplots}`
+2. **查找源码中的独立 figure PDF**：arXiv 源码有时包含由 TikZ 编译的 `.pdf` figure 文件
+3. **如果源码中有 figure PDF**：用 PyMuPDF 将 `.pdf` 转为 `.png`
+4. **如果只有内联 TikZ 代码**：
+   - 从编译后的 PDF 中定位 figure 区域（通过搜索 "Figure X:" caption 文本）
+   - 使用 PyMuPDF 裁剪 figure 区域（从 figure 顶部到 caption 底部），**不要截取整页**
+   - 裁剪代码示例：
+   ```python
+   import fitz
+   doc = fitz.open('paper.pdf')
+   for page in doc:
+       blocks = page.get_text('blocks')
+       # Find caption position (e.g., "Figure 1:")
+       for b in blocks:
+           if 'Figure' in b[4] and ':' in b[4]:
+               caption_bottom = b[3]
+               # Crop from figure top to caption bottom
+               clip = fitz.Rect(margin, fig_top, page.rect.width - margin, caption_bottom + 5)
+               pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), clip=clip)
+               pix.save(f'{output_dir}/{paper_id}_fig{n}.png')
+   ```
+5. **过滤小图标**：只保留宽度 > 200px 或高度 > 200px 的图片
 
 **arXiv源码包的优势**：
 1. **真正的论文图**：`pics/`目录包含作者准备的原始图片
