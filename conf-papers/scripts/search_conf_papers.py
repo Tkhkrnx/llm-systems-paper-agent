@@ -61,33 +61,88 @@ from search_arxiv import (
 # toc_name_template 中 {year} 会被替换为实际年份
 # 对于无法用 toc 查询的会议（如 ECCV），使用 venue+year 备选查询
 DBLP_VENUES = {
-    "CVPR": {"toc": "conf/cvpr", "toc_name": "cvpr{year}"},
-    "ICCV": {"toc": "conf/iccv", "toc_name": "iccv{year}"},
-    "ECCV": {"toc": "conf/eccv", "toc_name": None, "venue_query": "ECCV"},  # ECCV toc 不可用，用 venue+year
-    "ICLR": {"toc": "conf/iclr", "toc_name": "iclr{year}"},
-    "AAAI": {"toc": "conf/aaai", "toc_name": "aaai{year}"},
-    "NeurIPS": {"toc": "conf/nips", "toc_name": "neurips{year}"},
-    "ICML": {"toc": "conf/icml", "toc_name": "icml{year}"},
-    "MICCAI": {"toc": "conf/miccai", "toc_name": None, "venue_query": "MICCAI"},  # MICCAI toc 不稳定，用 venue+year
-    "ACL": {"toc": "conf/acl", "toc_name": "acl{year}"},
-    "EMNLP": {"toc": "conf/emnlp", "toc_name": None, "venue_query": "EMNLP"},  # EMNLP toc 不稳定，用 venue+year
+    # Systems / architecture / HPC / parallel / data systems
+    "MICRO": {"toc": "conf/micro", "toc_name": "micro{year}", "venue_query": "MICRO"},
+    "ASPLOS": {"toc": "conf/asplos", "toc_name": "asplos{year}", "venue_query": "ASPLOS"},
+    "SC": {"toc": "conf/sc", "toc_name": "sc{year}", "venue_query": "SC"},
+    "PPoPP": {"toc": "conf/ppopp", "toc_name": "ppopp{year}", "venue_query": "PPoPP"},
+    "OSDI": {"toc": "conf/osdi", "toc_name": "osdi{year}", "venue_query": "OSDI"},
+    "SOSP": {"toc": "conf/sosp", "toc_name": "sosp{year}", "venue_query": "SOSP"},
+    "NSDI": {"toc": "conf/nsdi", "toc_name": "nsdi{year}", "venue_query": "NSDI"},
+    "EuroSys": {"toc": "conf/eurosys", "toc_name": "eurosys{year}", "venue_query": "EuroSys"},
+    "ATC": {"toc": "conf/usenix", "toc_name": "usenix{year}", "venue_query": "USENIX Annual Technical Conference"},
+    "FAST": {"toc": "conf/fast", "toc_name": "fast{year}", "venue_query": "FAST"},
+    "HPCA": {"toc": "conf/hpca", "toc_name": "hpca{year}", "venue_query": "HPCA"},
+    "ISCA": {"toc": "conf/isca", "toc_name": "isca{year}", "venue_query": "ISCA"},
+    "ICS": {"toc": "conf/ics", "toc_name": "ics{year}", "venue_query": "ICS"},
+    "VLDB": {"toc": "conf/vldb", "toc_name": "vldb{year}", "venue_query": "VLDB"},
+    "SIGMOD": {"toc": "conf/sigmod", "toc_name": "sigmod{year}", "venue_query": "SIGMOD"},
+    "SoCC": {"toc": "conf/cloud", "toc_name": "socc{year}", "venue_query": "SoCC"},
+    "MLSys": {"toc": "conf/mlsys", "toc_name": "mlsys{year}", "venue_query": "MLSys"},
+
+    # AI / ML / NLP / IR / web / data mining / vision
+    "NeurIPS": {"toc": "conf/nips", "toc_name": "neurips{year}", "venue_query": "NeurIPS"},
+    "ICML": {"toc": "conf/icml", "toc_name": "icml{year}", "venue_query": "ICML"},
+    "ICLR": {"toc": "conf/iclr", "toc_name": "iclr{year}", "venue_query": "ICLR"},
+    "AAAI": {"toc": "conf/aaai", "toc_name": "aaai{year}", "venue_query": "AAAI"},
+    "IJCAI": {"toc": "conf/ijcai", "toc_name": "ijcai{year}", "venue_query": "IJCAI"},
+    "ACL": {"toc": "conf/acl", "toc_name": "acl{year}", "venue_query": "ACL"},
+    "EMNLP": {"toc": "conf/emnlp", "toc_name": None, "venue_query": "EMNLP"},
+    "NAACL": {"toc": "conf/naacl", "toc_name": None, "venue_query": "NAACL"},
+    "KDD": {"toc": "conf/kdd", "toc_name": "kdd{year}", "venue_query": "KDD"},
+    "WWW": {"toc": "conf/www", "toc_name": "www{year}", "venue_query": "WWW"},
+    "SIGIR": {"toc": "conf/sigir", "toc_name": "sigir{year}", "venue_query": "SIGIR"},
+    "CIKM": {"toc": "conf/cikm", "toc_name": "cikm{year}", "venue_query": "CIKM"},
+    "RecSys": {"toc": "conf/recsys", "toc_name": "recsys{year}", "venue_query": "RecSys"},
+    "UAI": {"toc": "conf/uai", "toc_name": "uai{year}", "venue_query": "UAI"},
+    "AISTATS": {"toc": "conf/aistats", "toc_name": "aistats{year}", "venue_query": "AISTATS"},
+    "COLT": {"toc": "conf/colt", "toc_name": "colt{year}", "venue_query": "COLT"},
+    "CVPR": {"toc": "conf/cvpr", "toc_name": "cvpr{year}", "venue_query": "CVPR"},
+    "ICCV": {"toc": "conf/iccv", "toc_name": "iccv{year}", "venue_query": "ICCV"},
+    "ECCV": {"toc": "conf/eccv", "toc_name": None, "venue_query": "ECCV"},
+    "MICCAI": {"toc": "conf/miccai", "toc_name": None, "venue_query": "MICCAI"},
 }
 
-# 会议 -> arXiv 分类映射（用于相关性评分中的分类匹配加分）
 VENUE_TO_CATEGORIES = {
+    "MICRO": ["cs.AR", "cs.PF"],
+    "ASPLOS": ["cs.AR", "cs.OS", "cs.PF"],
+    "SC": ["cs.DC", "cs.PF", "cs.AR"],
+    "PPoPP": ["cs.DC", "cs.PF", "cs.PL"],
+    "OSDI": ["cs.OS", "cs.DC"],
+    "SOSP": ["cs.OS", "cs.DC"],
+    "NSDI": ["cs.NI", "cs.DC"],
+    "EuroSys": ["cs.OS", "cs.DC"],
+    "ATC": ["cs.OS", "cs.DC"],
+    "FAST": ["cs.OS", "cs.DB"],
+    "HPCA": ["cs.AR", "cs.PF"],
+    "ISCA": ["cs.AR", "cs.PF"],
+    "ICS": ["cs.PF", "cs.DC"],
+    "VLDB": ["cs.DB", "cs.DC"],
+    "SIGMOD": ["cs.DB"],
+    "SoCC": ["cs.DC", "cs.OS"],
+    "MLSys": ["cs.LG", "cs.DC", "cs.PF"],
+    "NeurIPS": ["cs.LG", "cs.AI", "cs.CL", "cs.DC"],
+    "ICML": ["cs.LG", "cs.AI"],
+    "ICLR": ["cs.LG", "cs.AI", "cs.CL"],
+    "AAAI": ["cs.AI"],
+    "IJCAI": ["cs.AI"],
+    "ACL": ["cs.CL"],
+    "EMNLP": ["cs.CL"],
+    "NAACL": ["cs.CL"],
+    "KDD": ["cs.DB", "cs.LG", "cs.AI"],
+    "WWW": ["cs.IR", "cs.DB", "cs.AI"],
+    "SIGIR": ["cs.IR"],
+    "CIKM": ["cs.IR", "cs.DB"],
+    "RecSys": ["cs.IR", "cs.LG"],
+    "UAI": ["cs.LG", "cs.AI"],
+    "AISTATS": ["cs.LG"],
+    "COLT": ["cs.LG"],
     "CVPR": ["cs.CV"],
     "ICCV": ["cs.CV"],
     "ECCV": ["cs.CV"],
-    "ICLR": ["cs.LG", "cs.AI"],
-    "ICML": ["cs.LG"],
-    "NeurIPS": ["cs.LG", "cs.AI", "cs.CL"],
-    "AAAI": ["cs.AI"],
     "MICCAI": ["cs.CV", "eess.IV"],
-    "ACL": ["cs.CL"],
-    "EMNLP": ["cs.CL"],
 }
 
-# 评分权重（去掉新近性维度，因为年份由用户指定）
 WEIGHTS_CONF = {
     'relevance': 0.40,
     'popularity': 0.40,
@@ -554,7 +609,7 @@ def filter_and_score_papers(papers: List[Dict], cp_config: Dict, top_n: int = 10
     domains = {
         "conf_papers": {
             "keywords": cp_config['keywords'],
-            "arxiv_categories": ["cs.AI", "cs.CL", "cs.LG"],
+            "arxiv_categories": ["cs.DC", "cs.OS", "cs.PF", "cs.AR", "cs.DB", "cs.NI", "cs.ET", "cs.PL", "cs.IR", "cs.LG", "cs.CL", "cs.AI"],
         }
     }
     excluded_keywords = cp_config['excluded_keywords']
@@ -772,7 +827,7 @@ def main():
 
     # 准备输出
     output = {
-        "year": args.year,
+        "year": year,
         "conferences_searched": venues,
         "total_found": total_found,
         "total_filtered": total_filtered,

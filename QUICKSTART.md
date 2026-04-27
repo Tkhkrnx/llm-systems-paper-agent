@@ -1,162 +1,86 @@
-# 快速开始指南
+# 快速开始
 
-这是使用 evil-read-arxiv 的三步快速设置指南。
+## 1. 确认 Obsidian Vault
 
-## 第一步：安装依赖
+默认 vault：
 
-在终端运行：
+```text
+C:/Users/peng/Documents/PHR/obsidian_phr
+```
 
-```bash
+环境变量：
+
+```powershell
+[System.Environment]::SetEnvironmentVariable(
+  "OBSIDIAN_VAULT_PATH",
+  "C:/Users/peng/Documents/PHR/obsidian_phr",
+  "User"
+)
+```
+
+## 2. 安装依赖
+
+基础依赖：
+
+```powershell
 pip install -r requirements.txt
 ```
 
-## 第二步：配置
+MinerU 已在本机按源码 editable 安装。若需要重新安装：
 
-### 2.1 设置环境变量
-
-设置 `OBSIDIAN_VAULT_PATH` 环境变量，指向你的 Obsidian Vault 路径。所有脚本会自动读取此变量，无需手动修改脚本中的路径。
-
-```bash
-# Windows PowerShell（永久生效，设置后需重启终端）
-[System.Environment]::SetEnvironmentVariable("OBSIDIAN_VAULT_PATH", "C:/Users/YourName/Documents/Obsidian Vault", "User")
-
-# macOS/Linux（添加到 ~/.bashrc 或 ~/.zshrc）
-echo 'export OBSIDIAN_VAULT_PATH="/Users/yourname/Documents/Obsidian Vault"' >> ~/.bashrc
-source ~/.bashrc
+```powershell
+cd C:/Users/peng/Documents/PHR/Intellistream/projects/MinerU-mineru-3.1.5-released
+python -m pip install -e ".[all]" -i https://mirrors.aliyun.com/pypi/simple
+mineru --version
 ```
 
-### 2.2 创建配置文件
+## 3. 安装配置
 
-```bash
-cd evil-read-arxiv
-cp config.example.yaml config.yaml
+将 `config.yaml` 复制到 vault：
+
+```powershell
+New-Item -ItemType Directory -Force "C:/Users/peng/Documents/PHR/obsidian_phr/99_System/Config"
+Copy-Item config.yaml "C:/Users/peng/Documents/PHR/obsidian_phr/99_System/Config/research_interests.yaml" -Force
 ```
 
-编辑 `config.yaml`，修改：
+## 4. 安装 skills 到 Obsidian
 
-```yaml
-# 将此路径改为你的 Obsidian Vault 路径
-vault_path: "/path/to/your/obsidian/vault"
-
-# 根据你的研究兴趣修改关键词
-research_domains:
-  "你的研究领域1":
-    keywords:
-      - "keyword1"
-      - "keyword2"
+```powershell
+$vaultSkills = "C:/Users/peng/Documents/PHR/obsidian_phr/.claude/skills"
+Copy-Item -Recurse -Force start-my-day $vaultSkills
+Copy-Item -Recurse -Force conf-papers $vaultSkills
+Copy-Item -Recurse -Force paper-search $vaultSkills
+Copy-Item -Recurse -Force paper-ingest $vaultSkills
+Copy-Item -Recurse -Force paper-analyze $vaultSkills
+Copy-Item -Recurse -Force extract-paper-images $vaultSkills
 ```
 
-### 2.3 将配置文件放入 Vault
+## 5. 在 Obsidian 中使用
 
-```bash
-# macOS/Linux
-cp config.yaml "$OBSIDIAN_VAULT_PATH/99_System/Config/research_interests.yaml"
+打开 Obsidian vault 后，在 Claudian/Claude Code 对话中输入：
 
-# Windows PowerShell
-Copy-Item config.yaml "$env:OBSIDIAN_VAULT_PATH\99_System\Config\research_interests.yaml"
+```text
+使用 start-my-day，今天给我推荐3篇 LLM serving 和状态优化方向的论文，并保存 PDF、MinerU Markdown、图片和结构化笔记。
 ```
 
-### 2.4 将技能安装到 Claude Code
-
-将 evil-read-arxiv 目录中的四个技能文件夹复制到你的 Claude Code skills 目录：
-
-```bash
-# macOS/Linux
-cp -r evil-read-arxiv/start-my-day ~/.claude/skills/
-cp -r evil-read-arxiv/paper-analyze ~/.claude/skills/
-cp -r evil-read-arxiv/extract-paper-images ~/.claude/skills/
-cp -r evil-read-arxiv/paper-search ~/.claude/skills/
-
-# Windows PowerShell
-Copy-Item -Recurse evil-read-arxiv\start-my-day $env:USERPROFILE\.claude\skills\
-Copy-Item -Recurse evil-read-arxiv\paper-analyze $env:USERPROFILE\.claude\skills\
-Copy-Item -Recurse evil-read-arxiv\extract-paper-images $env:USERPROFILE\.claude\skills\
-Copy-Item -Recurse evil-read-arxiv\paper-search $env:USERPROFILE\.claude\skills\
+```text
+使用 conf-papers，搜索 2025 年 MICRO、ASPLOS、SC、PPoPP、NeurIPS、ICML、ICLR 中与 KV cache 和 LLM serving 相关的论文。
 ```
 
-## 第三步：创建 Obsidian 目录结构
-
-在你的 Obsidian Vault 中创建以下目录：
-
-```
-你的Vault/
-├── 10_Daily/
-├── 20_Research/
-│   └── Papers/
-├── 99_System/
-│   └── Config/
-│       └── research_interests.yaml  # 第二步中已复制
+```text
+使用 paper-ingest，导入 arXiv:2402.12345，领域设为 LLM Inference Systems。
 ```
 
-## 开始使用
-
-### 1. 打开 Claude Code
-
-在你的 Obsidian Vault 目录中打开终端：
-
-```bash
-# 切换到你的 Obsidian Vault 目录
-cd "$OBSIDIAN_VAULT_PATH"
-
-# 启动 Claude Code
-claude-code
+```text
+使用 paper-search，在已有笔记和 MinerU Markdown 里搜索 continuous batching 和 state placement。
 ```
 
-### 2. 开始每日论文推荐
+## 6. 输出位置
 
-在 Claude Code 中输入：
-
-```
-start my day
-```
-
-### 3. 分析单篇论文
-
-在 Claude Code 中输入：
-
-```
-paper-analyze 2602.12345
+```text
+10_Daily/                                  每日推荐
+20_Research/Papers/<domain>/              结构化论文笔记
+20_Research/Papers/_assets/<paper>/        PDF、MinerU Markdown、图片
+99_System/Config/research_interests.yaml   agent 配置
 ```
 
-## 常用 arXiv 分类
-
-| 分类代码 | 名称 | 说明 |
-|----------|------|------|
-| cs.AI | Artificial Intelligence | 人工智能 |
-| cs.LG | Learning | 机器学习 |
-| cs.CL | Computation and Language | 计算语言学/NLP |
-| cs.CV | Computer Vision | 计算机视觉 |
-| cs.MM | Multimedia | 多媒体 |
-| cs.MA | Multiagent Systems | 多智能体系统 |
-| cs.RO | Robotics | 机器人学 |
-
-## 故障排除
-
-### 问题："未指定 vault 路径" 或 "Papers directory not found"
-
-**解决**：
-1. 确认环境变量已设置：
-   ```bash
-   # Windows PowerShell
-   echo $env:OBSIDIAN_VAULT_PATH
-
-   # macOS/Linux
-   echo $OBSIDIAN_VAULT_PATH
-   ```
-2. 如果为空，回到第二步设置环境变量
-3. 确认目录结构已正确创建
-
-### 问题：论文图片提取失败
-
-**解决**：
-1. 确认安装了 PyMuPDF：`pip install PyMuPDF`
-2. 检查 arXiv ID 格式是否正确（如 2602.12345）
-
-### 问题：关键词自动链接不准确
-
-**解决**：编辑 `start-my-day/scripts/link_keywords.py` 中的 `COMMON_WORDS` 集合，添加你不需要自动链接的词。
-
-## 需要帮助？
-
-- 查看 [README.md](README.md) 获取详细说明
-- 提交 Issue 到 GitHub 仓库

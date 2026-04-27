@@ -55,7 +55,16 @@ ARXIV_CATEGORY_KEYWORDS = {
     "cs.CV": "computer vision",
     "cs.MM": "multimedia",
     "cs.MA": "multi-agent systems",
-    "cs.RO": "robotics"
+    "cs.RO": "robotics",
+    "cs.DC": "distributed computing systems",
+    "cs.OS": "operating systems",
+    "cs.PF": "performance",
+    "cs.AR": "computer architecture",
+    "cs.DB": "databases",
+    "cs.NI": "networking internet architecture",
+    "cs.ET": "emerging technologies",
+    "cs.PL": "programming languages runtimes compilers",
+    "cs.IR": "information retrieval"
 }
 
 # ---------------------------------------------------------------------------
@@ -852,7 +861,7 @@ def main():
     parser.add_argument('--target-date', type=str, default=None,
                         help='Target date (YYYY-MM-DD) for filtering')
     parser.add_argument('--categories', type=str,
-                        default='cs.AI,cs.LG,cs.CL,cs.CV,cs.MM,cs.MA,cs.RO',
+                        default='cs.DC,cs.OS,cs.PF,cs.AR,cs.DB,cs.NI,cs.ET,cs.PL,cs.IR,cs.LG,cs.CL,cs.AI',
                         help='Comma-separated list of arXiv categories')
     parser.add_argument('--skip-hot-papers', action='store_true',
                         help='Skip searching hot papers from Semantic Scholar')
