@@ -44,6 +44,7 @@ Each paper note should include:
 - manual reading focus: must-read sections/figures/tables, skimmable parts, and suggested reading order;
 - evidence-backed empirical claims;
 - relation to nearby papers;
-- confidence/readiness status.
+- value for the user's research direction;
+- limitations and open systems gaps.
 
 Use `TBD` for missing evidence. Do not guess.

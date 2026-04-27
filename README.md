@@ -48,7 +48,8 @@
 - 系统机制分析；
 - 实验边界；
 - 与已有工作的关系；
-- 是否可进入 matrix、BibTeX 或正文。
+- 对用户研究方向的价值；
+- 局限性和 open gap。
 
 ### `extract-paper-images`
 
