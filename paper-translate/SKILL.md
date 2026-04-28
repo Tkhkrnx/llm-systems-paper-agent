@@ -8,12 +8,12 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 把已经通过 `paper-ingest` 生成好的英文论文 Markdown，进一步转换为适合中文阅读的学术化 Markdown。
 
-`paper-translate` 不替代原始 MinerU Markdown，也不替代 `paper-analyze`。它的职责是：
+`paper-translate` 不替代原始 MinerU Markdown，也不替代 `paper-analyze`。它只是额外生成一份中文版阅读材料。它的职责是：
 
 - 保留英文原始 Markdown 作为原始证据；
 - 生成并保存一份结构尽量一致的中文版 Markdown；
 - 把翻译产物路径写回 `ingest_manifest.json`；
-- 让后续人工阅读和 `paper-analyze` 可以引用中文版材料。
+- 让用户后续人工阅读时能直接看中文版材料。
 
 # 输入
 
@@ -54,9 +54,7 @@ allowed-tools: Read, Write, Bash, WebFetch
 3. 分块翻译正文，避免一次性整篇长文本导致质量下降。
 4. 保留 Markdown 结构，生成 `*.zh-CN.md`。
 5. 如果存在 manifest，则更新其中的翻译产物路径和状态。
-6. 返回中文 Markdown 路径，并建议后续：
-   - 人工阅读时优先看中文版；
-   - `paper-analyze` 继续以英文原始 Markdown 为主证据，必要时参考中文版辅助理解。
+6. 返回中文 Markdown 路径。后续人工阅读时可优先看中文版；`paper-analyze` 仍然只应以英文原始 Markdown 为主证据。
 
 # 模型与环境
 
@@ -72,4 +70,5 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 - 通常在 `paper-ingest` 之后调用。
 - 可以被 `paper-analyze` 之前手动调用，用于先生成中文版材料。
+- 中文版 Markdown 不参与搜索、分类、评分或正式分析证据判断。
 - 不负责论文分析、不负责会议搜索、不负责每日推荐。

@@ -10,7 +10,7 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 `paper-ingest` 是资产入库型 skill，只负责“把 PDF、MinerU Markdown、图片和资产索引保存下来”。它不生成正式论文分析笔记，也不维护导师七问、综述五字段或人工阅读重点；这些统一交给 `paper-analyze`。
 
-如果用户需要先把 MinerU 英文 Markdown 转成中文学术版 Markdown，应在入库完成后调用 `paper-translate`。
+如果用户需要先把 MinerU 英文 Markdown 转成中文学术版 Markdown，应在入库完成后调用 `paper-translate`。这一步只额外生成中文版阅读材料，不改变后续分析的主证据。
 
 必须产出：
 
