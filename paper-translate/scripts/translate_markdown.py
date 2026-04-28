@@ -16,8 +16,8 @@ import tomllib
 
 DEFAULT_VAULT = Path("C:/Users/peng/Documents/PHR/obsidian_phr")
 DEFAULT_CODEX_CONFIG = Path("C:/Users/peng/.codex/config.toml")
-DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1")
-DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+DEFAULT_MODEL = "gpt-4.1"
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
 
 SYSTEM_PROMPT = """你是一名严谨的学术论文翻译助手。
 
@@ -53,11 +53,8 @@ def read_codex_config(path: Path) -> dict:
 
 def resolve_api_settings(cli_model: Optional[str], cli_base_url: Optional[str]) -> Tuple[str, str]:
     api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    base_url = (cli_base_url or os.environ.get("OPENAI_BASE_URL") or "").strip()
-    model = (cli_model or os.environ.get("OPENAI_MODEL") or "").strip()
-
-    if api_key:
-        return api_key, (base_url or DEFAULT_BASE_URL).rstrip("/"), (model or DEFAULT_MODEL)
+    env_base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+    env_model = os.environ.get("OPENAI_MODEL", "").strip()
 
     codex_config = read_codex_config(DEFAULT_CODEX_CONFIG)
     provider_name = str(codex_config.get("model_provider") or "").strip()
@@ -73,8 +70,8 @@ def resolve_api_settings(cli_model: Optional[str], cli_base_url: Optional[str]) 
         or os.environ.get("OPENAI_APIKEY", "").strip()
         or os.environ.get("API_KEY", "").strip()
     )
-    base_url = base_url or codex_base_url or DEFAULT_BASE_URL
-    model = model or str(codex_config.get("model") or DEFAULT_MODEL).strip()
+    base_url = (cli_base_url or env_base_url or codex_base_url or DEFAULT_BASE_URL).strip()
+    model = (cli_model or env_model or str(codex_config.get("model") or DEFAULT_MODEL)).strip()
 
     if not api_key:
         raise SystemExit(
