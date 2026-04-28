@@ -66,7 +66,7 @@
 1. `paper-search`
 2. arXiv/Semantic Scholar 搜索脚本
 3. `paper-ingest`
-4. 按需 `paper-translate`
+4. `paper-translate`
 5. `paper-analyze`
 6. 必要时 `extract-paper-images`
 

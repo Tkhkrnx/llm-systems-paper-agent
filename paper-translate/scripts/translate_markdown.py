@@ -11,9 +11,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import requests
+import tomllib
 
 
 DEFAULT_VAULT = Path("C:/Users/peng/Documents/PHR/obsidian_phr")
+DEFAULT_CODEX_CONFIG = Path("C:/Users/peng/.codex/config.toml")
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1")
 DEFAULT_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 
@@ -39,6 +41,47 @@ def load_manifest(path: Path) -> dict:
 
 def write_manifest(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def read_codex_config(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    with path.open("rb") as fh:
+        data = tomllib.load(fh)
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_api_settings(cli_model: Optional[str], cli_base_url: Optional[str]) -> Tuple[str, str]:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    base_url = (cli_base_url or os.environ.get("OPENAI_BASE_URL") or "").strip()
+    model = (cli_model or os.environ.get("OPENAI_MODEL") or "").strip()
+
+    if api_key:
+        return api_key, (base_url or DEFAULT_BASE_URL).rstrip("/"), (model or DEFAULT_MODEL)
+
+    codex_config = read_codex_config(DEFAULT_CODEX_CONFIG)
+    provider_name = str(codex_config.get("model_provider") or "").strip()
+    providers = codex_config.get("model_providers") or {}
+    provider = providers.get(provider_name) if isinstance(providers, dict) else None
+    codex_base_url = ""
+    if isinstance(provider, dict):
+        codex_base_url = str(provider.get("base_url") or "").strip()
+
+    # Codex config does not expose the secret key in plain text; use compatible env names if present.
+    api_key = (
+        os.environ.get("OPENAI_API_KEY", "").strip()
+        or os.environ.get("OPENAI_APIKEY", "").strip()
+        or os.environ.get("API_KEY", "").strip()
+    )
+    base_url = base_url or codex_base_url or DEFAULT_BASE_URL
+    model = model or str(codex_config.get("model") or DEFAULT_MODEL).strip()
+
+    if not api_key:
+        raise SystemExit(
+            "Missing API key. Set OPENAI_API_KEY (or API_KEY). "
+            "The script already supports your Codex-compatible base_url/model from ~/.codex/config.toml."
+        )
+    return api_key, base_url.rstrip("/"), model
 
 
 def split_frontmatter(text: str) -> Tuple[str, str]:
@@ -169,13 +212,11 @@ def main() -> int:
     parser.add_argument("--md", help="Path to the source Markdown file")
     parser.add_argument("--output", help="Optional explicit output Markdown path")
     parser.add_argument("--vault", default=str(DEFAULT_VAULT))
-    parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--base-url", default=None)
     args = parser.parse_args()
 
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise SystemExit("Missing OPENAI_API_KEY. Configure your OpenAI-compatible API credentials first.")
+    api_key, base_url, model = resolve_api_settings(args.model, args.base_url)
 
     manifest_path, md_path = resolve_paths(
         Path(args.manifest).resolve() if args.manifest else None,
@@ -185,14 +226,15 @@ def main() -> int:
     output_path = Path(args.output).resolve() if args.output else make_output_path(md_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    translated_text = translate_markdown(source_text, api_key, args.model, args.base_url)
+    translated_text = translate_markdown(source_text, api_key, model, base_url)
     output_path.write_text(translated_text, encoding="utf-8")
 
     result = {
         "status": "translated",
         "source_md": str(md_path),
         "translated_md": str(output_path),
-        "model": args.model,
+        "model": model,
+        "base_url": base_url,
     }
 
     if manifest_path:

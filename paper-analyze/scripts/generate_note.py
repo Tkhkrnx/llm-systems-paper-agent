@@ -289,6 +289,12 @@ def build_note(manifest: dict, vault: Path, md_text: str) -> str:
     source_url = paper_id_to_url(paper_id, manifest.get("source_url", ""))
     pdf_link = obsidian_link(Path(manifest["pdf"]), vault, "原始 PDF")
     mineru_link = obsidian_link(Path(manifest["mineru_md"]), vault, "MinerU Markdown")
+    translated_md = manifest.get("translated_md")
+    translated_link = (
+        obsidian_link(Path(translated_md), vault, "中文版 Markdown")
+        if translated_md and Path(translated_md).exists()
+        else ""
+    )
     assets_link = obsidian_link(Path(manifest["assets_index"]), vault, "assets")
     authors = clean_meta(manifest.get("authors"))
     year = clean_meta(manifest.get("year"))
@@ -320,6 +326,7 @@ updated: "{today}"
 - **会议/期刊**：待确认
 - **PDF**：{pdf_link}
 - **MinerU Markdown**：{mineru_link}
+- **中文版 Markdown**：{translated_link or '待生成'}
 - **资产索引**：{assets_link}
 {source_line}
 

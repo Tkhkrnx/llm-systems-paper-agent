@@ -46,6 +46,7 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 - 查重和检索已有笔记：调用 `paper-search`。
 - PDF 下载、MinerU Markdown、图片和资产 manifest 入库：调用 `paper-ingest`。
+- 将 MinerU 英文 Markdown 转成中文学术版 Markdown：调用 `paper-translate`。
 - 正式论文笔记生成、深度分析和系统框架补全：调用 `paper-analyze`。
 - 单独补图或整理图片：调用 `extract-paper-images`。
 
@@ -60,9 +61,10 @@ allowed-tools: Read, Write, Bash, WebFetch
    - 使用 MinerU 转 Markdown；
    - 保存图片和原始解析资产；
    - 生成 `assets.md` 和 `ingest_manifest.json`。
-6. 对前 3 篇论文，无论是新入库还是已有资产，都调用 `paper-analyze` 生成或补全正式论文笔记、导师七问、综述五字段和人工阅读重点。
-7. 如果图片缺失或 MinerU 图片不够清晰，调用 `extract-paper-images`。
-8. 缺失证据一律写 `TBD`，不要猜测。
+6. 对前 3 篇论文，无论是新入库还是已有资产，只要存在 MinerU Markdown，都调用 `paper-translate` 生成 `*.zh-CN.md` 中文版材料。
+7. 对前 3 篇论文，再调用 `paper-analyze` 生成或补全正式论文笔记、导师七问、综述五字段和人工阅读重点。
+8. 如果图片缺失或 MinerU 图片不够清晰，调用 `extract-paper-images`。
+9. 缺失证据一律写 `TBD`，不要猜测。
 
 # 推荐命令
 
@@ -82,7 +84,7 @@ python scripts/search_arxiv.py `
 - 今日推荐概览；
 - 3 篇重点论文；
 - 每篇论文的标题、作者、来源、链接、推荐理由；
-- 是否已生成 PDF/MinerU Markdown/详细笔记；
+- 是否已生成 PDF/MinerU Markdown/中文版 Markdown/详细笔记；
 - 后续阅读建议。
 
 # 调用示例
@@ -92,6 +94,7 @@ python scripts/search_arxiv.py `
 1. `paper-search` 查重；
 2. 本 skill 搜索和排序新论文；
 3. `paper-ingest` 入库前 3 篇新论文的 PDF/MinerU/图片/manifest；
-4. `paper-analyze` 对前 3 篇生成或补全正式详细分析笔记；
-5. `extract-paper-images` 只在图片缺失时补图；
-6. 回到本 skill 汇总今日推荐笔记。
+4. `paper-translate` 为前 3 篇生成中文版 MinerU Markdown；
+5. `paper-analyze` 对前 3 篇生成或补全正式详细分析笔记；
+6. `extract-paper-images` 只在图片缺失时补图；
+7. 回到本 skill 汇总今日推荐笔记。

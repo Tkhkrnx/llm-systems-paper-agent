@@ -36,6 +36,7 @@ AI/ML/NLP/IR/Web/Data Mining/CV 方向：
 
 - 查重和查已有论文：调用 `paper-search`。
 - 有 arXiv ID、PDF URL 或本地 PDF 时：调用 `paper-ingest` 入库 PDF/MinerU/图片/manifest。
+- 需要把英文 MinerU Markdown 转成中文学术材料时：调用 `paper-translate`。
 - 需要正式论文笔记、深入阅读和系统分析时：调用 `paper-analyze`。
 - 图片不完整时：调用 `extract-paper-images`。
 
@@ -51,8 +52,9 @@ AI/ML/NLP/IR/Web/Data Mining/CV 方向：
    - 使用 MinerU 转 Markdown；
    - 保存图片；
    - 生成 `assets.md` 和 `ingest_manifest.json`。
-7. 对重点论文调用 `paper-analyze` 生成或更新正式论文笔记并做系统分析。
-8. 如果 DBLP 或 Semantic Scholar 没检索到已知论文，直接使用 PDF URL 或本地 PDF 通过 `paper-ingest` 入库。
+7. 对重点论文，如果已经有 MinerU Markdown，调用 `paper-translate` 生成 `*.zh-CN.md` 中文版材料。
+8. 对重点论文调用 `paper-analyze` 生成或更新正式论文笔记并做系统分析。
+9. 如果 DBLP 或 Semantic Scholar 没检索到已知论文，直接使用 PDF URL 或本地 PDF 通过 `paper-ingest` 入库。
 
 # 推荐命令
 
@@ -78,4 +80,5 @@ python scripts/search_conf_papers.py `
 2. 本 skill 调 DBLP/Semantic Scholar 搜索会议论文；
 3. 本 skill 生成会议推荐列表；
 4. `paper-ingest` 入库重点论文资产；
-5. `paper-analyze` 对入库论文生成或补全正式分析笔记。
+5. `paper-translate` 为重点论文生成中文版 MinerU Markdown；
+6. `paper-analyze` 对入库论文生成或补全正式分析笔记。

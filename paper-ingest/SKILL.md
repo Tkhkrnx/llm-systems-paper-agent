@@ -52,8 +52,7 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 6. 保存 MinerU 输出的 Markdown、图片和相关资产。
 7. 写入 `assets.md` 和 `ingest_manifest.json`，记录 PDF、MinerU Markdown、图片目录、来源链接和元数据。
-8. 返回下一步建议：立即调用 `paper-analyze` 生成或更新正式论文笔记。
-9. 如果用户需要中文版论文材料，调用 `paper-translate` 生成 `*.zh-CN.md`。
+8. 返回下一步建议：先调用 `paper-translate` 生成中文版 Markdown，再调用 `paper-analyze` 生成或更新正式论文笔记。
 9. `paper-analyze` 生成的正式笔记应链接：
    - PDF；
    - MinerU Markdown；
@@ -107,6 +106,5 @@ python scripts/ingest_paper.py `
 - 被 `start-my-day` 和 `conf-papers` 调用，用于把推荐论文资产保存到 Obsidian。
 - 调用 `paper-search` 做查重。
 - 产出的 PDF、MinerU Markdown、图片和 manifest 会被 `paper-analyze` 作为证据使用。
-- 入库完成后，通常应立即调用 `paper-analyze` 生成正式论文笔记。
-- 如果需要中文阅读材料，可在 `paper-analyze` 之前或并行调用 `paper-translate`。
+- 入库完成后，通常应先调用 `paper-translate` 生成中文版 Markdown，再调用 `paper-analyze`。
 - 图片不足时再调用 `extract-paper-images`。
