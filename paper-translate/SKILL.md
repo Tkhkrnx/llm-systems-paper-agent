@@ -62,7 +62,7 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 - `OPENAI_API_KEY`
 - `OPENAI_BASE_URL`（可选，若使用兼容网关）
-- `OPENAI_MODEL`（可选，默认 `gpt-4.1`）
+- `OPENAI_MODEL`（可选，默认 `gpt-5.4`）
 
 如果环境变量未配置，脚本应直接报错，而不是输出低质量占位翻译。
 
