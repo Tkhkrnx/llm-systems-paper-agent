@@ -51,6 +51,10 @@
 - 对用户研究方向的价值；
 - 局限性和 open gap。
 
+### `paper-translate`
+
+论文 Markdown 翻译 skill。读取 `paper-ingest` 生成的 MinerU 英文 Markdown，生成一份严谨、准确、学术化的中文版 Markdown，并把翻译结果路径写回 `ingest_manifest.json`。
+
 ### `extract-paper-images`
 
 图片补全 skill。优先复用 MinerU 图片，其次 arXiv 源码图，最后从 PDF 提取。
@@ -62,8 +66,9 @@
 1. `paper-search`
 2. arXiv/Semantic Scholar 搜索脚本
 3. `paper-ingest`
-4. `paper-analyze`
-5. 必要时 `extract-paper-images`
+4. 按需 `paper-translate`
+5. `paper-analyze`
+6. 必要时 `extract-paper-images`
 
 默认每日推荐 3 篇重点论文。
 
@@ -73,6 +78,7 @@
 
 - `paper-search`
 - `paper-ingest`
+- `paper-translate`
 - `paper-analyze`
 - `extract-paper-images`
 
@@ -156,6 +162,10 @@ mineru -p <pdf> -o <output> -b pipeline
 
 ```text
 使用 paper-ingest，导入 arXiv:2402.12345，领域设为 LLM Inference Systems。
+```
+
+```text
+使用 paper-translate，把这篇论文的 MinerU Markdown 转成中文学术版 Markdown。
 ```
 
 ```text

@@ -17,6 +17,8 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 之后由本 skill 生成或更新正式结构化论文笔记。
 
+如果用户希望先获得中文版论文材料，可以在 `paper-ingest` 之后先调用 `paper-translate`。但 `paper-analyze` 仍应优先以英文原始 MinerU Markdown 作为主证据，中文版 Markdown 只作为辅助阅读材料。
+
 `paper-analyze` 是唯一负责生成正式论文分析笔记的 skill，不负责每日推荐，也不负责会议搜索。它应该消费 `paper-ingest` 生成的 PDF、MinerU Markdown、图片资产和 manifest。
 
 # 分析重点
@@ -111,4 +113,5 @@ allowed-tools: Read, Write, Bash, WebFetch
 - 被 `start-my-day` 和 `conf-papers` 调用，用于补全重点论文。
 - 调用 `paper-search` 找已有材料。
 - 必要时调用 `paper-ingest` 入库论文。
+- 用户需要中文版论文材料时，可先调用 `paper-translate`。
 - 必要时调用 `extract-paper-images` 补图。
