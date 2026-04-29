@@ -211,32 +211,58 @@ def summarize_domain_reason(manifest: dict) -> str:
 def concept_primer(text: str, domain: str) -> List[Tuple[str, str]]:
     lowered = text.lower()
     items = []
+
+    def add_when(condition: bool, name: str, body: str) -> None:
+        if condition and name not in {item[0] for item in items}:
+            items.append((name, body))
+
     if "kv cache" in lowered:
-        items.append((
+        add_when(True,
             "什么是 KV cache",
             "KV cache 是模型把历史 token 的 key/value 表示缓存下来，避免每生成一个新 token 都重新算完整上下文。长上下文时它会线性膨胀，因此既占显存，也限制系统能处理的上下文长度和并发。"
-        ))
+        )
     if "prefill" in lowered or "decode" in lowered:
-        items.append((
+        add_when(True,
             "什么是 prefill / decode",
             "Prefill 是模型先一次性读完整个 prompt 并建立 prompt-side KV 的阶段；decode 是模型随后逐 token 生成输出并反复回读这份 prompt 状态的阶段。很多系统优化正是抓住了 prefill 只做一次、decode 会重复消费状态这一点。"
-        ))
+        )
     if "compression" in lowered or "quant" in lowered:
-        items.append((
+        add_when(True,
             "什么是 dense compression",
             "Dense compression 在本文里的含义是：prompt 里的每个 token 仍然有对应的 KV 表示，系统不把某些 token 的状态直接删除；压缩发生在表示精度上，也就是不同 token、不同 channel 可以用不同 bit budget 表示。这样读会更清楚：eviction 改变的是“哪些状态还存在”，dense compression 改变的是“这些状态用多高精度保存”。"
-        ))
+        )
     if "eviction" in lowered:
-        items.append((
+        add_when(True,
             "什么是 eviction",
             "Eviction 是根据某种重要性规则只保留一部分状态，把其余 token 或 head 对应的 KV 直接丢掉，以换取内存节省。它的收益直接，但在证据敏感任务里也更容易造成不可逆的信息损失。"
-        ))
+        )
+
+    add_when("evidence-sensitive" in lowered or "evidence sensitive" in lowered,
+        "什么是 evidence-sensitive workload",
+        "Evidence-sensitive workload 指答案依赖上下文里具体证据片段的任务，例如长文档问答、RAG、代码定位、法律或医学材料问答。理解这类 workload 时要抓住证据 token 的稀疏性和不可替代性：它们可能只出现一次、位置很散、attention 分数未必一直最高，却可能是回答问题必须引用的依据。对这类任务来说，直接 eviction 某些 token 的风险更高，因为被删掉的证据在 decode 阶段无法再被模型读取；PREFILLCOMP 强调 full-prompt dense compression，正是为了降低这种不可逆证据丢失风险。"
+    )
+    add_when("prefillcomp" in lowered,
+        "PREFILLCOMP 这个名字在说什么",
+        "PREFILLCOMP 可以拆成 Prefill + Compression 来理解。它把压缩决策前移到 prefill 阶段，利用完整 prompt 的全局视野一次性估计 token importance 和 channel sensitivity，再把决策打包成 compressed prompt artifact。这个名字提醒读者：本文的核心是把 prefill 阶段的结构观察转成 decode 阶段可复用的运行时状态表示，因此它更接近推理系统里的状态重编码，和普通离线量化的关注点不同。"
+    )
+    add_when("bpt" in lowered or "bit per token" in lowered or "bits per token" in lowered,
+        "什么是 BPT / matched budget",
+        "BPT 在这里可以理解为每个 token 的 KV 状态平均分到多少 bit budget。论文用 matched budget 做对比，是为了避免一种不公平比较：某个方法看起来质量更好，只是因为它用了更多内存。matched-budget 对比要求不同方法在相近内存预算下比较 fidelity 或 composite gain，这样才能更清楚地判断预算分配策略本身是否更有效。"
+    )
+    add_when("ttft" in lowered or "time to first token" in lowered or "decode latency" in lowered or "end-to-end latency" in lowered,
+        "TTFT、decode latency 和 end-to-end latency 分别是什么",
+        "TTFT 是 Time To First Token，也就是从请求开始到模型吐出第一个输出 token 的时间，主要反映 prefill、调度、artifact 构建等首 token 前路径的开销。Decode latency 更关注后续逐 token 生成阶段每一步或整体 decode 的速度，反映压缩格式读取、解包和 attention 访问是否拖慢在线生成。End-to-end latency 是用户看到的总耗时，把 prefill、TTFT 前后的准备、decode 以及系统额外开销都算进去。读 PREFILLCOMP 的 Figure 9 时要把这三个指标分开：TTFT 高说明首 token 前成本重，decode latency 高说明生成阶段仍有持续开销，end-to-end latency 高说明最终用户体验受到整体影响。"
+    )
+    add_when("artifact" in lowered,
+        "什么是 compressed prompt artifact",
+        "Compressed prompt artifact 是 prefill 后物化出来的一份压缩状态包。它不只是压缩后的 K/V 数值，还包含 decode 阶段需要按正确格式读取这些状态的元数据。这个概念很重要，因为它把算法决策变成了 runtime 可以消费的数据对象：如果没有 artifact，token importance 和 bit allocation 只停留在分析层；有了 artifact，decode path 才能真正带着压缩后的 prompt state 运行。"
+    )
     if not items:
         items.append((
             "理解本文前需要的背景",
             f"这篇论文主要落在 **{domain}**。读它时要先搞清楚它优化的是哪类状态对象、状态出现在推理流程的哪个阶段，以及作者是在删状态、压状态，还是重新安排状态如何被消费。"
         ))
-    return items[:4]
+    return items[:8]
 
 
 def infer_method_steps() -> List[str]:
@@ -387,7 +413,7 @@ updated: "{today}"
 {source_line}
 
 ## 一句话总结
-这篇论文研究的是长上下文 LLM 推理里的 KV cache 压缩问题。讲清楚它要先抓住一个系统事实：prompt 在 prefill 后会变成跨层、跨 head、跨 token 的 K/V 状态集合，这份状态会留在显存里，并在 decode 的每一步被反复读取。PREFILLCOMP 的做法是先在 prefill 阶段观察完整 prompt 形成的结构信号，再把有限 bit budget 分给更重要或更敏感的 token/channel，最后生成 decode 阶段可以直接消费的 compressed prompt artifact。原文的核心证据也围绕这条链路展开：约 {h2o_bpt} BPT 下对比 H2O，约 {kivi_bpt} BPT 下对比 KIVI，decode incremental memory 降到 vanilla 的 {decode_incremental}，但 TTFT 和 end-to-end latency 也分别升到 {ttft} 和 {e2e_latency}。
+这篇论文研究的是长上下文 LLM 推理里的 KV cache 压缩问题。讲清楚它要先抓住一个系统事实：prompt 在 prefill 后会变成跨层、跨 head、跨 token 的 K/V 状态集合，这份状态会留在显存里，并在 decode 的每一步被反复读取。PREFILLCOMP 这个名字可以理解成 prefill-native compression：它先在 prefill 阶段观察完整 prompt 形成的结构信号，再把有限 bit budget 分给更重要或更敏感的 token/channel，最后生成 decode 阶段可以直接消费的 compressed prompt artifact。原文的核心证据也围绕这条链路展开：约 {h2o_bpt} BPT 下对比 H2O，约 {kivi_bpt} BPT 下对比 KIVI，decode incremental memory 降到 vanilla 的 {decode_incremental}，但 TTFT 和 end-to-end latency 也分别升到 {ttft} 和 {e2e_latency}。这里的 TTFT 是首 token 前路径的时间，end-to-end latency 是用户请求的总耗时，所以这些数字说明方法有显存收益，也有在线服务必须继续消化的时间成本。
 
 ## 先修概念 / 背景铺垫
 {primer_text}
@@ -401,7 +427,7 @@ updated: "{today}"
 长上下文推理的瓶颈来自一份会长期存在的状态。prefill 阶段读完整段 prompt 后，每一层都会为每个 prompt token 生成 K/V；decode 阶段每生成一个新 token，都要回看这些 K/V。prompt 变长时，这份 prompt-side KV 按 token 数线性增长，占用显存，也挤压 batch size、并发数和最大上下文长度。原文在 motivation 里把这个问题说得很直接：KV cache 在长上下文 serving 中已经是一阶系统瓶颈。
 
 本文做法：
-作者把问题具体化成一个状态预算分配问题：完整 prompt 的 KV 要继续保留，但不同 token 和 channel 不必用同样精度保存。原文先说明 evidence-sensitive workload 中删 token 会有不可逆风险，然后说明固定低比特量化会把预算平均撒给所有状态。PREFILLCOMP 因此把问题改写为：在保留完整 prompt 覆盖范围的条件下，哪些位置和维度应该拿到更高 bit budget，哪些部分可以更激进压缩。
+作者把问题具体化成一个状态预算分配问题：完整 prompt 的 KV 要继续保留，但不同 token 和 channel 不必用同样精度保存。原文先说明 evidence-sensitive workload 中删 token 会有不可逆风险；这里的 evidence-sensitive workload 指答案依赖具体上下文证据的任务，一旦相关 token 被删，后续 decode 就无法再读取这条证据。随后作者指出固定低比特量化会把预算平均撒给所有状态。PREFILLCOMP 因此把问题改写为：在保留完整 prompt 覆盖范围的条件下，哪些位置和维度应该拿到更高 bit budget，哪些部分可以更激进压缩。
 
 关键结论与意义：
 这篇论文的意义在于把 KV cache 从“模型内部中间张量”讲成了“推理系统里的状态资源”。一旦这样看，系统可以围绕它做估值、压缩、打包、迁移和复用。这个视角自然连接到分层状态管理、跨硬件 memory tiering、prefill/decode 解耦和 runtime scheduling。
@@ -451,7 +477,7 @@ updated: "{today}"
 系统论文的实验需要把收益和代价拆开看。对这篇论文来说，压缩率本身只能说明状态变小了，还不能说明模型是否仍能利用 prompt 证据，也不能说明在线推理是否真的能服务更长上下文。更合理的读法是按三条证据线来读：质量线看同等预算下 fidelity 是否保持，容量线看 decode 阶段显存是否释放，代价线看 TTFT、decode latency 和 end-to-end latency 增加到什么程度。
 
 本文做法：
-实验主要围绕三个边界展开。第一条边界是和 H2O 这类 eviction 路线做 matched-budget 对比，用来说明保留 full prompt state 后再做 variable-rate compression 是否更稳。第二条边界是和 KIVI 这类固定 dense quantization 对比，用来说明 prompt-aware 的 bit allocation 是否真的比统一低比特更会花预算。第三条边界是系统资源边界，论文用 prefill peak、decode incremental allocation、context-fit frontier 和 latency ratios 来说明收益出现在哪个阶段、代价又集中在哪个阶段。
+实验主要围绕三个边界展开。第一条边界是和 H2O 这类 eviction 路线做 matched-budget 对比，matched budget 的意思是在相近内存预算下比较方法，避免某个方法只是因为用更多 bit 才显得效果好；这条边界用来说明保留 full prompt state 后再做 variable-rate compression 是否更稳。第二条边界是和 KIVI 这类固定 dense quantization 对比，用来说明 prompt-aware 的 bit allocation 是否真的比统一低比特更会花预算。第三条边界是系统资源边界，论文用 prefill peak、decode incremental allocation、context-fit frontier 和 latency ratios 来说明收益出现在哪个阶段、代价又集中在哪个阶段。
 
 关键结论与意义：
 把这些实验连起来看，PREFILLCOMP 的结论是有层次的：它在质量保持上证明了 full prompt dense compression 的动机，在 decode memory 上证明了压缩 artifact 对 serving 状态占用有帮助，同时也通过 Figure 9 暴露了当前实现的在线延迟压力。组会里讲实验时，不要把它讲成“效果更好”四个字，而要讲成：这套方法把显存问题往 decode 阶段推进了一步，但 prefill 侧统计、artifact 构建和压缩格式读取仍然是后续系统优化必须处理的成本来源。
@@ -461,7 +487,7 @@ updated: "{today}"
 这篇论文最值得带走的是它对推理状态生命周期的拆解。长上下文 LLM serving 里的 KV cache 会经历生成、保存、压缩、再消费几个阶段；不同阶段看到的信息不同，能承受的开销也不同。prefill 拥有完整 prompt 的全局视野，适合做一次性的状态估值；decode 对延迟更敏感，适合消费已经物化好的轻量状态表示。这个阶段差异，是本文整个设计成立的基础。
 
 本文做法：
-作者通过 matched-budget fidelity、decode-side memory 改善和 latency 代价三个面向，把 PREFILLCOMP 的价值边界交代了出来。原文的数字说明这条路确实能降低 decode 侧状态占用，但 Figure 9 的 latency ratios 也说明当前实现还没有把额外计算和数据格式开销完全压下去。换句话说，PREFILLCOMP 更像是在给出一个清晰的 design point：先在 prefill 做状态估值，再把估值结果固化成 decode 可消费的压缩状态。
+作者通过 matched-budget fidelity、decode-side memory 改善和 latency 代价三个面向，把 PREFILLCOMP 的价值边界交代了出来。这里的 fidelity 可以理解成“压缩以后模型还能不能利用 prompt 证据完成任务”，decode-side memory 指逐 token 生成阶段需要持续占用的 prompt 状态显存，latency 则要拆成 TTFT、decode latency 和 end-to-end latency 分别看。原文的数字说明这条路确实能降低 decode 侧状态占用，但 Figure 9 的 latency ratios 也说明当前实现还没有把额外计算和数据格式开销完全压下去。换句话说，PREFILLCOMP 更像是在给出一个清晰的 design point：先在 prefill 做状态估值，再把估值结果固化成 decode 可消费的压缩状态。
 
 关键结论与意义：
 这篇论文可以抽象成一个可复用的系统模式：先估计状态价值，再据此分配预算，最后把决策物化成后续阶段可消费的状态工件。这个模式可以成为你之后做分层状态优化的基本范式：同一份状态在不同生命周期阶段可以有不同表示、不同放置位置和不同调度策略；runtime 的任务就是在质量、容量和延迟之间做有证据支撑的分配。
@@ -493,14 +519,14 @@ updated: "{today}"
 
 ## 实验设置和关键结果
 ### 实验设置
-实验主要围绕三个边界展开：一是和 eviction 路线比，在相同预算下是否更稳；二是和固定低比特 dense quantization 比，是否能利用 prompt 结构拿到更好的 fidelity；三是系统侧究竟换来了多少显存/容量收益，又付出了多少延迟成本。读实验时要把这些问题分开，不要混成“效果好不好”一句话。fidelity 实验是在证明状态没有被压坏，memory/context 实验是在证明系统资源真的被释放，latency 实验是在证明或暴露这套方案离在线部署还有多远。
+实验主要围绕三个边界展开：一是和 eviction 路线比，在相同预算下是否更稳；二是和固定低比特 dense quantization 比，是否能利用 prompt 结构拿到更好的 fidelity；三是系统侧究竟换来了多少显存/容量收益，又付出了多少延迟成本。这里的 fidelity 关注模型输出质量和证据利用是否被破坏，memory/context 关注省下的显存能否换成更长上下文或更大 batch，latency 关注用户请求路径是否被新机制拖慢。读实验时要把这些问题分开，不要混成“效果好不好”一句话。
 
 ### 关键结果
 先看 fidelity：作者在约 {h2o_bpt} BPT 的 matched-budget 设置下和 H2O 比，Figure 6 中展示的 model-dataset 组合都保持正增益，平均 composite gain 是 {h2o_gain}。这个结果要这样理解：H2O 通过删状态来省显存，PREFILLCOMP 通过降低不同状态的精度来省显存；当任务需要保留细粒度 prompt 证据时，保留完整覆盖范围会更稳。
 
 再看 systems：Figure 8 显示 prefill peak memory 大约是 vanilla 的 {prefill_peak}，decode incremental memory 降到 {decode_incremental}，fit frontier 扩展约 {fit_frontier}K tokens。这里的逻辑是：prefill 阶段会付出额外统计和 artifact 构建开销，所以 peak memory 没有明显下降；真正的收益出现在 decode 阶段，因为此时系统反复读取的是压缩后的 prompt state。
 
-最后看代价：Figure 9 给出的 TTFT 是 {ttft}x，decode latency 是 {decode_latency}x，end-to-end latency 是 {e2e_latency}x。这个数字很关键，因为它说明当前版本已经把 memory/context 问题往前推进了一步，但还没有把在线延迟问题解决掉。下一步系统优化的入口也很清楚：统计逻辑能否下沉到 kernel，artifact build 能否流水化，压缩结果能否缓存复用，decode 端读取压缩格式能否减少解包开销。
+最后看代价：Figure 9 给出的 TTFT 是 {ttft}x，decode latency 是 {decode_latency}x，end-to-end latency 是 {e2e_latency}x。TTFT 衡量首 token 之前的等待时间，里面会包含 prefill、结构统计、artifact 构建等前置成本；decode latency 衡量后续逐 token 生成阶段是否被压缩格式读取和解包拖慢；end-to-end latency 则把用户请求从开始到完成的总耗时算进去。这个数字很关键，因为它说明当前版本已经把 memory/context 问题往前推进了一步，但还没有把在线延迟问题解决掉。下一步系统优化的入口也很清楚：统计逻辑能否下沉到 kernel，artifact build 能否流水化，压缩结果能否缓存复用，decode 端读取压缩格式能否减少解包开销。
 
 ## 与已有工作的关系
 作者实际上在和两条路线对话：一条是 H2O 这类 eviction / selective retention 路线，另一条是 KIVI 这类 fixed dense quantization 路线。H2O 的核心问题是“在预算有限时哪些 token 应该留下”，所以它改变的是状态覆盖范围；KIVI 的核心问题是“整份 KV 能否用统一低比特表示”，所以它主要改变的是整体表示精度；PREFILLCOMP 的问题设定介于二者之间，它保留 full prompt coverage，然后在 token 和 channel 两个维度上分配不同精度。这个定位很关键，因为它把状态管理从二选一的“保留/删除”扩展成更细粒度的“保留范围 + 表示精度 + 后续消费格式”联合设计。

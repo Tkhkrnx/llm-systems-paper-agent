@@ -76,6 +76,7 @@ allowed-tools: Read, Write, Bash, WebFetch
 - 不要写成短句提纲。除论文基本信息外，核心小节里的每个要点都应至少用一段话讲清背景、本文做法、为什么这样设计、结果意味着什么。
 - 避免用“不是……而是……”“直觉很像……”这类转折套话代替解释。需要从底层逻辑逐层讲：问题为什么出现、原文具体机制是什么、该机制解决了哪一步、论文用什么实验或数字支撑、读者应该怎样理解这个结果。
 - 如果出现 KV cache、prefill、decode、dense compression、eviction、paged KV、prefix caching、memory tiering 等概念，必须先用研究生能听懂的方式解释它们在本文中扮演的角色。
+- 方法名、缩写、workload 类型和实验指标都必须解释清楚。比如 evidence-sensitive workload、TTFT、decode latency、end-to-end latency、BPT、matched budget、artifact、throughput、p99 latency、context-fit frontier 等，不能假设读者已经知道；解释时要说明“这个术语在本文里衡量什么、为什么会影响系统结论、读对应图表时应该怎么理解”。
 - 导师七问、综述五字段、方法流程、关键图、实验、局限、人工阅读重点、研究命题都要保持这种讲解口吻，不能只列关键词。
 - 但凡属于“判断性内容”而不是“说明性内容”，例如局限性、open gap、与已有工作的边界、实验是否真正支持 claim、对你研究方向的可借鉴之处，都必须采用接近严格审稿的证据标准来写：判断应尽量锚定论文原文、图表、实验设置与正式结果，避免轻飘的启发式评价。
 - 这不意味着整篇笔记要写成审稿意见；而是意味着笔记中的判断句必须更严谨、更克制、更有证据边界。
