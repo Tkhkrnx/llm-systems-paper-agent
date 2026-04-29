@@ -8,6 +8,7 @@ Customized for LLM inference systems, hierarchical state optimization, stateful/
 - `conf-papers`: search systems/architecture/HPC/parallel/database venues through DBLP plus Semantic Scholar enrichment.
 - `paper-ingest`: ingest arXiv ID, PDF URL, or local PDF into Obsidian with PDF, MinerU Markdown, images, `assets.md`, and `ingest_manifest.json`.
 - `paper-analyze`: create or deepen the formal paper note from ingested assets.
+- `paper-review`: generate a strict systems/architecture-style review from the original paper, MinerU Markdown, and the formal analysis note.
 - `extract-paper-images`: extract paper figures when needed.
 - `paper-search`: search existing notes in Obsidian.
 

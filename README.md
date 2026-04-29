@@ -51,6 +51,19 @@
 - 对用户研究方向的价值；
 - 局限性和 open gap。
 
+### `paper-review`
+
+严格审稿 skill。读取 `paper-ingest` 与 `paper-analyze` 的产物，结合原文 PDF、MinerU Markdown、正式分析笔记与审稿模板，生成一份偏体系结构 / 系统顶会风格的中文审稿意见，包括：
+
+- Summary and High Level Discussion
+- Strengths
+- Weaknesses
+- Comments for Rebuttal
+- Detailed Comments for Authors
+- Scored Review Questions
+- Reproducibility
+- Confidential Comments to the Program Committee
+
 ### `paper-translate`
 
 论文 Markdown 翻译 skill。读取 `paper-ingest` 生成的 MinerU 英文 Markdown，生成一份严谨、准确、学术化的中文版 Markdown，并把翻译结果路径写回 `ingest_manifest.json`。
@@ -68,7 +81,8 @@
 3. `paper-ingest`
 4. `paper-translate`
 5. `paper-analyze`
-6. 必要时 `extract-paper-images`
+6. `paper-review`
+7. 必要时 `extract-paper-images`
 
 默认每日推荐 3 篇重点论文。
 
@@ -80,6 +94,7 @@
 - `paper-ingest`
 - `paper-translate`
 - `paper-analyze`
+- `paper-review`
 - `extract-paper-images`
 
 ## 会议范围
