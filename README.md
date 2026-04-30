@@ -44,12 +44,21 @@
 
 - 导师七问；
 - 综述五字段；
+- 方法整体机制总结；
+- 分析框架图；
+- 实验设置和关键结果；
 - 人工阅读重点；
-- 系统机制分析；
-- 实验边界；
 - 与已有工作的关系；
 - 对用户研究方向的价值；
 - 局限性和 open gap。
+
+当前 `paper-analyze` 的默认写法已经不是“摘要式摘录”，而是面向“了解大模型基础概念、但记得不牢且系统联系不够紧的研究生”来讲清楚。它有几个明确约束：
+
+- 不再单独生成“先修概念 / 背景铺垫”词典式小节；
+- 基础知识、背景知识和术语解释会直接织进问题、方法、实验、局限等正文部分；
+- 方法部分会按“要解决什么问题 -> 原文具体怎么做 -> 为什么这样做可行 -> 工程收益和代价是什么”的层次展开；
+- 实验部分会覆盖主要图表，而不是只挑几张图解释；
+- 局限、open gap、与已有工作的边界会尽量按接近严格审稿的证据标准来写，但整篇笔记仍保持教学式讲解口吻。
 
 ### `paper-review`
 
@@ -63,6 +72,8 @@
 - Scored Review Questions
 - Reproducibility
 - Confidential Comments to the Program Committee
+
+当前 `paper-review` 已经移除了单独的 `Multi-Angle Technical Assessment` checklist section。方法结构、baseline 公平性、系统代价、artifact 生命周期、deployment realism、claim-over-evidence、reproducibility 等判断会直接融入原有 review 结构里。
 
 ### `paper-translate`
 
@@ -184,7 +195,11 @@ mineru -p <pdf> -o <output> -b pipeline
 ```
 
 ```text
-使用 paper-analyze，分析这篇论文，重点关注 state object、control surface、coupling path、evaluation boundary 和 remaining systems gap。
+使用 paper-analyze，分析这篇论文。整篇笔记都按“了解大模型基础但理解不牢的同学”来讲清楚，方法部分要讲清 Phase 1 到 Phase 5 的具体机制，实验部分按图逐项解释。
+```
+
+```text
+使用 paper-review，基于原文 PDF、MinerU Markdown 和正式分析笔记生成体系结构/系统顶会风格的严格中文审稿意见。
 ```
 
 ## 配置文件
