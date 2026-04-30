@@ -162,84 +162,6 @@ def missing_checks(status: dict[str, bool]) -> list[str]:
     return [label for key, label in labels.items() if not status.get(key)]
 
 
-def verdict(label: str, supported: object, body: str, impact: str) -> str:
-    if isinstance(supported, str):
-        state = supported
-    else:
-        state = "支持" if supported else "部分支持 / 存在缺口"
-    return f"- **{label}**：{state}。{body} {impact}"
-
-
-def multi_angle_assessment(status: dict[str, bool], facts: dict[str, object]) -> list[str]:
-    ttft = facts.get("ttft")
-    decode_latency = facts.get("decode_latency")
-    e2e_latency = facts.get("e2e_latency")
-    latency_text = ""
-    if isinstance(ttft, tuple) and isinstance(decode_latency, tuple) and isinstance(e2e_latency, tuple):
-        latency_text = (
-            f"论文给出的 TTFT 为 {ttft[0]:.2f}x/{ttft[1]:.2f}x/{ttft[2]:.2f}x，"
-            f"decode latency 为 {decode_latency[0]:.2f}x/{decode_latency[1]:.2f}x/{decode_latency[2]:.2f}x，"
-            f"end-to-end latency 为 {e2e_latency[0]:.2f}x/{e2e_latency[1]:.2f}x/{e2e_latency[2]:.2f}x。"
-        )
-    severe_latency = (
-        isinstance(ttft, tuple) and max(ttft) >= 5.0
-    ) or (
-        isinstance(decode_latency, tuple) and max(decode_latency) >= 5.0
-    ) or (
-        isinstance(e2e_latency, tuple) and max(e2e_latency) >= 5.0
-    )
-    return [
-        verdict(
-            "方法结构合理性",
-            status["method_structure"],
-            "方法把 token importance、channel sensitivity、architecture-aware correction、shared budget allocator 和 compressed artifact 串成一条 prefill-to-decode 路径。",
-            "这说明设计结构本身是闭合的；接收风险主要不在 idea 是否能讲通，而在各组件是否被充分验证、以及 runtime 代价是否可接受。",
-        ),
-        verdict(
-            "核心技术假设",
-            status["assumption"],
-            "核心假设是 long-context prompt state 内部存在非均匀价值和非均匀量化敏感度，prefill 阶段能够捕捉这些信号并指导后续 decode。",
-            "该假设与论文问题设置一致，但需要跨模型 family、任务类型和上下文长度证明稳定性；若这些 setting 下信号不稳定，方法优势会退化为特定 workload 上的经验现象。",
-        ),
-        verdict(
-            "组件必要性与消融",
-            "支持" if status["ablation"] else "部分支持 / 存在缺口",
-            "方法由多个组件组成，组件之间的责任分工清楚。",
-            "如果缺少逐组件消融，就无法判断收益主要来自 token importance、channel sensitivity、architecture correction，还是来自整体预算变化；这会削弱技术贡献的可解释性。",
-        ),
-        verdict(
-            "实验合理性",
-            "支持" if (status["breadth"] and status["memory"] and status["latency"] and status["throughput_tail"] and status["ablation"]) else "部分支持 / 存在缺口",
-            "实验覆盖了质量、容量和延迟三条主线，memory/context 结果与 latency 结果共同构成系统评价的基本骨架。",
-            "当前评价仍需要吞吐、tail latency、batching 和失败区间补强；系统论文不能只证明单请求或少数 setting 下的显存收益。",
-        ),
-        verdict(
-            "baseline 与预算公平性",
-            "支持" if (status["baseline"] and status["matched_budget"] and status["cost_breakdown"] and status["artifact"]) else "部分支持 / 存在缺口",
-            "论文选择 H2O、KIVI 等相关路线作为比较对象，并使用 matched-budget 或 dense-to-dense 设置对齐一部分资源约束。",
-            "公平性仍取决于实现路径、kernel 优化程度、metadata 开销和真实 serving 配置是否一致；预算对齐不应只停留在 BPT 数字接近。",
-        ),
-        verdict(
-            "系统代价和部署真实性",
-            "支持" if (status["latency"] and status["cost_breakdown"] and status["deployment"] and status["throughput_tail"] and not severe_latency) else "部分支持 / 存在缺口",
-            latency_text or "论文讨论了 latency / runtime cost，但可定位的吞吐、尾延迟或真实 batching 证据不足。",
-            "该维度是当前最影响接收判断的部分：如果压缩收益伴随数倍 TTFT 或 end-to-end latency，作者需要证明状态估值、artifact build 和 decode 读取压缩格式的成本能被批处理、缓存、流水化或 kernel 融合消化。",
-        ),
-        verdict(
-            "claim 与证据匹配",
-            "支持" if (status["baseline"] and status["matched_budget"] and status["memory"] and status["latency"] and status["breadth"] and not severe_latency) else "部分支持 / 存在缺口",
-            "质量、容量和代价三类证据都被触及，主 claim 有基础支撑。",
-            "结论应限制在论文实际覆盖的模型、数据集、上下文长度和硬件配置内；若作者把它表述成一般 long-context serving 方案，证据强度仍然偏窄。",
-        ),
-        verdict(
-            "artifact / reproducibility",
-            status["artifact"],
-            "可复现性需要代码、artifact、runtime 配置、模型版本、硬件配置和完整实验脚本共同支撑。",
-            "这里的 artifact 还关系到系统设计本身：compressed prompt artifact 是否可缓存、迁移、分页、恢复，以及是否能在 batching 和多租户场景中保持一致，会直接影响它能否成为 production runtime 管理的一等状态对象。",
-        ),
-    ]
-
-
 def infer_action(status: dict[str, bool], facts: dict[str, object]) -> str:
     severe = 0
     if not status["baseline"]:
@@ -492,13 +414,8 @@ def build_review(manifest: dict, note_path: Path, note_text: str, md_text: str, 
         "## Summary and High Level Discussion",
         "",
         summary,
-        "",
-        "## Multi-Angle Technical Assessment",
-        "",
     ]
-    lines.extend(multi_angle_assessment(status, facts))
     lines.extend([
-        "",
         "## Strengths",
         "",
     ])

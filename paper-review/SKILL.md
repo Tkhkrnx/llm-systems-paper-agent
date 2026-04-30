@@ -97,18 +97,7 @@ allowed-tools: Read, Write, Bash, WebFetch
 7. `## Reproducibility`
 8. `## Confidential Comments to the Program Committee`
 
-其中必须额外包含 `## Multi-Angle Technical Assessment`，从以下角度逐项给出结论：
-
-- 方法结构合理性；
-- 核心技术假设；
-- 组件必要性与消融；
-- 实验合理性；
-- baseline 与预算公平性；
-- 系统代价和部署真实性；
-- claim 与证据是否匹配；
-- artifact / reproducibility。
-
-每一项都要直接下判断：支持、部分支持或不支持，并说明影响接收判断的原因。
+不要单独输出 `## Multi-Angle Technical Assessment` 这类检查表式 section。方法结构、核心假设、组件必要性、实验合理性、baseline 公平性、系统代价、claim-evidence 匹配、artifact/reproducibility 等判断必须融入 `Summary and High Level Discussion`、`Strengths`、`Weaknesses`、`Scored Review Questions` 和 `Reproducibility` 中。审稿结果应像一份自然的顶会 review，而不是逐项填表。
 
 ## Strengths / Weaknesses 要求
 
