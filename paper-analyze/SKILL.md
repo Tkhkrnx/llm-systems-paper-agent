@@ -77,7 +77,8 @@ allowed-tools: Read, Write, Bash, WebFetch
 - 不要把 MinerU 原文大段粘进笔记；笔记应该是中文解释、系统化转述和研究视角分析。
 - 不要写成短句提纲。除论文基本信息外，核心小节里的每个要点都应至少用一段话讲清背景、本文做法、为什么这样设计、结果意味着什么。
 - 避免用“不是……而是……”“直觉很像……”这类转折套话代替解释。需要从底层逻辑逐层讲：问题为什么出现、原文具体机制是什么、该机制解决了哪一步、论文用什么实验或数字支撑、读者应该怎样理解这个结果。
-- 如果出现 KV cache、prefill、decode、dense compression、eviction、paged KV、prefix caching、memory tiering 等概念，必须先用研究生能听懂的方式解释它们在本文中扮演的角色。
+- 不要单独再加一个“基础名词解释”或“先修概念”小节。基础知识、背景知识和术语解释必须直接织进各个正文 section，让读者在读问题、方法、实验、局限时顺手完成理解，而不是先看一份词典再看正文。
+- 如果出现 KV cache、prefill、decode、dense compression、eviction、paged KV、prefix caching、memory tiering 等概念，必须在第一次真正用到它们的正文位置，当场解释它们在本文中扮演的角色。
 - 方法机制解释必须按“这一阶段要解决什么问题 -> 原文具体怎么做 -> 为什么能这样做 -> 工程收益和代价是什么”的层次展开。不能只说“利用 attention 提取 importance”“扫描 KV 得到 sensitivity”“allocator 分配 bit”，必须讲清 attention 矩阵为什么能反映 token 被后续位置使用、为什么列求和对应 token importance、为什么扫描已生成 KV cache 不需要额外 forward、为什么二分/水位线能满足全局 bit budget、为什么 artifact 需要 payload/metadata/index、为什么 decode 要用底层 kernel 按需解包。
 - 方法名、缩写、workload 类型和实验指标都必须解释清楚。比如 evidence-sensitive workload、TTFT、decode latency、end-to-end latency、BPT、matched budget、artifact、throughput、p99 latency、context-fit frontier 等，不能假设读者已经知道；解释时要说明“这个术语在本文里衡量什么、为什么会影响系统结论、读对应图表时应该怎么理解”。
 - 导师七问、综述五字段、方法整体机制总结、分析框架图、实验、局限、人工阅读重点、研究命题都要保持这种讲解口吻，不能只列关键词。
