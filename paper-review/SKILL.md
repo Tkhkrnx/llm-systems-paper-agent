@@ -114,6 +114,8 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 - `Strengths` 只写真正能支撑接收判断的优点。
 - `Weaknesses` 优先写决定性弱点，而不是零碎小建议。
+- `Weaknesses` 必须同时覆盖两层：一层是 baseline 公平性、实验设计、系统代价、artifact/reproducibility 等全面检查；另一层是能决定接收判断的系统性核心局限，例如 runtime cost 如何破坏 serving claim、方法产生的状态对象是否能进入生产 runtime 管理闭环、关键模型/架构假设是否具备跨模型泛化证据。
+- 不要把核心局限写成 checklist 标签。每条决定性 weakness 都要写成因果链：原文证据或图表信号 -> 方法/系统机制原因 -> 对 deployment、soundness、generalization 或 reproducibility 的后果 -> 对接收判断的影响。
 - 每条 weakness 尽量包含：
   - 问题是什么；
   - 为什么这是关键问题；

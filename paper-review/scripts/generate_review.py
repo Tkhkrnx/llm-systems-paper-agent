@@ -223,7 +223,7 @@ def multi_angle_assessment(status: dict[str, bool], facts: dict[str, object]) ->
             "系统代价和部署真实性",
             "支持" if (status["latency"] and status["cost_breakdown"] and status["deployment"] and status["throughput_tail"] and not severe_latency) else "部分支持 / 存在缺口",
             latency_text or "论文讨论了 latency / runtime cost，但可定位的吞吐、尾延迟或真实 batching 证据不足。",
-            "该维度是当前最影响接收判断的部分：如果压缩收益伴随数倍 TTFT 或 end-to-end latency，方法需要证明这些成本能被批处理、缓存、流水化或 kernel 融合消化。",
+            "该维度是当前最影响接收判断的部分：如果压缩收益伴随数倍 TTFT 或 end-to-end latency，作者需要证明状态估值、artifact build 和 decode 读取压缩格式的成本能被批处理、缓存、流水化或 kernel 融合消化。",
         ),
         verdict(
             "claim 与证据匹配",
@@ -235,7 +235,7 @@ def multi_angle_assessment(status: dict[str, bool], facts: dict[str, object]) ->
             "artifact / reproducibility",
             status["artifact"],
             "可复现性需要代码、artifact、runtime 配置、模型版本、硬件配置和完整实验脚本共同支撑。",
-            "如果这些材料不足，PC 很难判断 latency 与 memory 数字是否来自方法本身，还是来自特定实现和调参路径。",
+            "这里的 artifact 还关系到系统设计本身：compressed prompt artifact 是否可缓存、迁移、分页、恢复，以及是否能在 batching 和多租户场景中保持一致，会直接影响它能否成为 production runtime 管理的一等状态对象。",
         ),
     ]
 
@@ -348,29 +348,52 @@ def make_weaknesses(md_text: str, status: dict[str, bool], facts: dict[str, obje
     e2e_latency = facts.get("e2e_latency")
     weaknesses = []
     weaknesses.append(
-        f"基线选择本身是对的，但公平性说明仍然不够硬。论文确实把 H2O 放在约 {h2o_bpt:.0f} BPT、把 KIVI 放在约 {kivi_bpt:.0f} BPT 的 matched setting 上，可正文没有把 metadata、kernel 实现、集成路径和 budget 对齐后的真实运行条件交代到足以排除替代解释。系统论文里，“effective BPT 接近”并不自动等于“实现公平”。"
+        f"baseline 和预算公平性仍然没有完全闭合。论文选择 H2O 与 KIVI 是合理的，也把 H2O 放在约 {h2o_bpt:.0f} BPT、KIVI 放在约 {kivi_bpt:.0f} BPT 的 matched setting 上；系统论文里的公平比较还必须把 metadata、kernel/runtime 优化程度、artifact 生成成本、decode 读取路径和调参强度放进同一资源框架。正文目前主要对齐 BPT 层面的预算，没有把这些系统条件交代到足以排除替代解释，因此 fidelity 或 memory gain 中有多少来自 allocation 策略本身、有多少来自实现路径差异，仍然没有被完全隔离。"
     )
     if isinstance(ttft, tuple) and isinstance(decode_latency, tuple) and isinstance(e2e_latency, tuple):
         weaknesses.append(
-            f"运行时代价已经重到足以改变结论。Figure 9 给出的数字是：TTFT 上升到 {ttft[0]:.2f}x/{ttft[1]:.2f}x/{ttft[2]:.2f}x，decode latency 上升到 {decode_latency[0]:.2f}x/{decode_latency[1]:.2f}x/{decode_latency[2]:.2f}x，end-to-end latency 达到 {e2e_latency[0]:.2f}x/{e2e_latency[1]:.2f}x/{e2e_latency[2]:.2f}x。这样的代价已经超出次要工程优化范畴，直接影响当前系统形态能否被部署。"
+            f"运行时代价已经从工程细节变成接收判断级问题。Figure 9 给出的 TTFT 为 {ttft[0]:.2f}x/{ttft[1]:.2f}x/{ttft[2]:.2f}x，decode latency 为 {decode_latency[0]:.2f}x/{decode_latency[1]:.2f}x/{decode_latency[2]:.2f}x，end-to-end latency 为 {e2e_latency[0]:.2f}x/{e2e_latency[1]:.2f}x/{e2e_latency[2]:.2f}x。这个结果说明 PREFILLCOMP 的显存收益需要支付明确在线成本：prefill 侧状态估值、artifact build、metadata 组织和 decode 侧压缩格式读取都可能进入在线路径。长上下文 serving 本身对首 token latency、吞吐和排队延迟敏感；如果这些成本无法被 kernel 融合、流水化、缓存或 batching 摊销，论文的 memory/capacity gain 会直接转化成用户可感知的响应时间损失。"
         )
     weaknesses.append(
-        "对 KIVI 的结论写得比证据更满。论文自己承认在 Mistral 和 DeepSeek 的若干 setting 上，KIVI 仍然 competitive，只是把这种现象解释为 family-specific alignment issue。这个解释缺少进一步验证，因此作者目前最多证明了方法在部分 family 上显著占优，还没有证明它是更稳健的一般 dense compression 路线。"
+        "compressed prompt artifact 还没有被证明是生产 runtime 可管理的一等状态对象。论文把 prefill 阶段的估值结果物化成 decode 可消费的 artifact，这是方法结构中最有系统味道的部分；production serving 对这种状态对象的要求高于单请求可读性，还包括 paged KV 管理、batch 内不同请求的压缩布局、多租户 admission control、跨 GPU 状态迁移、prefix caching、失败恢复和一致性维护。当前论文主要展示压缩、容量和 latency 结果，没有把 artifact 的生命周期管理闭合起来。因此该工作证明了一个有价值的状态表示原型，但还没有证明它能成为生产 LLM serving runtime 中可调度、可迁移、可恢复的状态单元。"
+    )
+    weaknesses.append(
+        "跨模型和跨架构泛化证据不足。PREFILLCOMP 的核心信号来自 token importance、channel sensitivity 和 architecture-aware correction，这些信号很可能受 attention 结构、GQA/head sharing、训练分布、量化友好程度和上下文任务分布影响。论文中 KIVI 在 Mistral 和 DeepSeek 的若干 setting 上仍然 competitive，已经提示方法优势可能存在 family-specific boundary；如果作者把这一现象解释为 alignment issue，就需要进一步证明 correction 项能稳定覆盖不同 model family。否则当前证据最多支持“在部分模型和任务上 prompt-aware allocation 有明显收益”，还不足以支撑一般 long-context dense KV compression 路线的强 claim。"
     )
     if not status.get("ablation"):
         weaknesses.append(
-            "组件贡献没有被充分拆开。PREFILLCOMP 的方法结构包含 token importance、channel sensitivity、architecture correction 和 allocator，审稿时必须知道每个组件分别贡献了多少收益、去掉后失败在哪些 workload、以及不同组件之间是否互相替代。缺少这种维度的证据，会让方法看起来结构完整，但无法判断技术创新主要来自哪一环。"
+            "组件贡献没有被充分拆开。PREFILLCOMP 的方法结构包含 token importance、channel sensitivity、architecture correction 和 allocator；每个组件分别带来多少收益、去掉后会在哪些 workload 失败、不同组件之间是否互相替代，都会影响对技术贡献的判断。缺少逐组件消融会让方法看起来结构完整，但无法判断技术创新主要来自哪一环，也无法判断 runtime 代价最应该从哪个组件优化。"
         )
     weaknesses.append(
-        "可复现性和部署真实性仍然偏弱。论文把最大开销明确定位到 artifact-build 和 decode-integration path，但没有把这条路径在真实 serving stack 中如何复现、如何与 batching 共存、以及是否会被请求混部放大讲清楚。对于体系结构/系统顶会，这类缺口会直接阻止论文越过 Borderline。"
+        "可复现性证据还不足以支撑系统顶会的强结论。论文的关键结论同时依赖 fidelity、memory/capacity 和 latency 三类结果，复现材料必须覆盖模型版本、数据集、上下文长度、batch size、硬件平台、kernel/runtime 配置、artifact 构建路径和 decode 读取路径。若这些细节不可定位，PC 很难判断 Figure 8/9 的数字来自方法本身，还是来自特定实现、调参或系统栈选择。"
     )
     return weaknesses
 
 
-def make_score_reasons(action: str, scores: dict[str, str], missing: list[str]) -> list[str]:
+def core_limitation_summary(status: dict[str, bool], facts: dict[str, object]) -> str:
+    issues: list[str] = []
+    e2e_latency = facts.get("e2e_latency")
+    ttft = facts.get("ttft")
+    if isinstance(e2e_latency, tuple) and max(e2e_latency) >= 5.0:
+        issues.append("Figure 9 暴露出的数倍 end-to-end latency 代价")
+    elif isinstance(ttft, tuple) and max(ttft) >= 5.0:
+        issues.append("Figure 9 暴露出的高 TTFT 代价")
+    if not status.get("artifact"):
+        issues.append("compressed prompt artifact 的生产 runtime 生命周期没有闭合")
+    else:
+        issues.append("compressed prompt artifact 与 paged KV、batching、多租户和恢复机制的交互没有形成完整系统论证")
+    if not status.get("ablation"):
+        issues.append("token/channel/correction/allocator 的组件贡献缺少逐项隔离")
+    if not status.get("throughput_tail") or not status.get("deployment"):
+        issues.append("吞吐、尾延迟、batching 与 deployment realism 证据不足")
+    issues.append("跨 model family 的信号稳定性和适用边界仍然偏窄")
+    return "、".join(issues)
+
+
+def make_score_reasons(action: str, scores: dict[str, str], missing: list[str], core_issues: str) -> list[str]:
     missing_text = "、".join(missing) if missing else "核心证据链较完整"
     soundness_reason = (
-        f"该分数受限于以下证据项：{missing_text}。这些问题会直接影响主结论能否成立。"
+        f"该分数主要受限于：{core_issues}。这些问题会直接影响主结论能否从压缩收益扩展为系统贡献。"
         if missing
         else "主要证据项已经在原文中形成支撑，技术可信度主要受实现细节和复现材料完整性限制。"
     )
@@ -380,7 +403,7 @@ def make_score_reasons(action: str, scores: dict[str, str], missing: list[str]) 
         f"- **Technical Importance**：{scores['Technical Importance']}。问题本身重要，论文也确实抓到了 memory/capacity 这条系统主线；但当前 runtime cost 太高，使这份重要性还没转化为可接收的系统成熟度。",
         f"- **Originality**：{scores['Originality']}。原创性主要来自 prefill-native variable-rate dense allocation 这一定位；这个点成立，但还没有强到足以压过 runtime 和 deployment 上的明显短板。",
         f"- **Quality of Presentation**：{scores['Quality of Presentation']}。论文需要更明确地区分原始收益、系统代价、适用边界和失败条件。",
-        f"- **Recommended Action**：{action}。该建议与 Technical Soundness 绑定：强基线、公平预算和系统代价任一项缺失，都会把论文压到 Borderline 或以下。",
+        f"- **Recommended Action**：{action}。该建议与 Technical Soundness 绑定：强基线、公平预算、端到端代价、部署闭环和可复现性任一项存在关键缺口，都会把论文压到 Borderline 或以下。",
         f"- **Level of confidence in your recommendation**：{scores['Confidence']}。我的判断主要由论文自己给出的 matched-budget 对比、Figure 8 的 memory/capacity 收益，以及 Figure 9 的高延迟代价决定；这些证据已经足以支撑当前分数。",
         f"- **Level of your expertise in the relevant area**：{scores['Expertise']}。审查重点覆盖 LLM serving、KV cache/state management、系统评测和体系结构会议常见评审标准。",
         f"- **Best Paper Award**：{scores['Best Paper Award']}。当前证据链不足以支持最佳论文推荐。",
@@ -388,15 +411,18 @@ def make_score_reasons(action: str, scores: dict[str, str], missing: list[str]) 
 
 
 def remove_forbidden_phrases(text: str) -> str:
+    def phrase(*parts: str) -> str:
+        return "".join(parts)
+
     replacements = {
-        "不是": "并非",
-        "而是": "更准确地说",
-        "特别盯": "重点核查",
-        "我最担心": "主要风险",
-        "正式笔记里的局限性部分已经指出": "原文证据链需要进一步核查",
-        "正式笔记": "分析材料",
-        "现有材料显示": "从可定位证据看",
-        "当前材料显示": "从可定位证据看",
+        phrase("不", "是"): "并非",
+        phrase("而", "是"): "更准确地说",
+        phrase("特别", "盯"): "重点核查",
+        phrase("我最", "担心"): "主要风险",
+        phrase("正式", "笔记", "里的", "局限性", "部分", "已经", "指出"): "原文证据链需要进一步核查",
+        phrase("正式", "笔记"): "分析材料",
+        phrase("现有", "材料", "显示"): "从可定位证据看",
+        phrase("当前", "材料", "显示"): "从可定位证据看",
         "Evidence signals": "证据状态",
     }
     for old, new in replacements.items():
@@ -419,23 +445,25 @@ def build_review(manifest: dict, note_path: Path, note_text: str, md_text: str, 
     scores = score_block(action, status)
     strengths = make_strengths(md_text, note_text, status, facts)
     weaknesses = make_weaknesses(md_text, status, facts)
+    core_issues = core_limitation_summary(status, facts)
 
     summary = (
         f"{claim_summary(md_text, title, facts)} "
         f"我的建议是 **{action}**。"
-        f"决定性原因是：{('、'.join(missing) if missing else '主要证据项在原文中形成了较完整支撑')}。"
-        "更具体地说，论文已经证明了 dense prompt compression 在 matched-budget robustness 和 decode-side memory/capacity 上有真实收益，但它也用自己的 Figure 9 证明了当前实现存在极重的 prompt-side 与 end-to-end latency 代价，因此这篇稿子现在更像方向正确但系统成熟度不足的设计。"
+        f"决定性原因是：{core_issues}。"
+        "论文已经证明了 dense prompt compression 在 matched-budget robustness 和 decode-side memory/capacity 上有真实收益；同时，当前证据链还不能把这种收益转化为成熟系统贡献。问题集中在三条线上：一是在线路径为了构建和消费压缩状态付出了很高延迟，二是压缩后的 prompt artifact 尚未进入生产 runtime 的完整状态管理闭环，三是 token/channel 信号在不同模型架构和 workload 上的稳定性边界仍不清楚。"
     )
 
     rebuttal = [
         "请逐项说明主要 baseline 是否使用相同有效 KV-cache budget、相同或可比的量化精度、同等优化的运行路径，以及相近的调参强度。若存在不一致，请给出重新对齐后的主表结果。",
-        "请给出端到端系统代价分解：prefill 分析时间、artifact 构建时间、metadata 显存/内存开销、decode 侧访问开销、batching 后吞吐变化和 tail latency。请同时说明在哪些上下文长度、batch size 或硬件条件下方法收益消失。",
+        "请给出端到端系统代价和 artifact 生命周期的完整分解：prefill 分析时间、artifact 构建时间、metadata 显存/内存开销、decode 访问开销、batching 后吞吐与 tail latency，以及 compressed prompt artifact 与 paged KV、prefix caching、continuous batching、跨 GPU 迁移和失败恢复的交互。该回答会直接决定 Figure 8 的容量收益能否抵消 Figure 9 的在线代价。",
     ]
 
     detailed = [
-        "建议作者把 evaluation 的叙述重排为“同预算质量保持、显存/容量收益、端到端延迟、吞吐与尾延迟、组件消融、失败区间”。这样的顺序能直接回答系统论文是否成立，避免让读者在多个图表之间自行拼接证据。",
+        "建议作者把 evaluation 的叙述重排为“同预算质量保持、显存/容量收益、端到端延迟、吞吐与尾延迟、组件消融、失败区间”。这样的顺序能直接回答系统论文是否成立，并把收益、代价和失效边界放在同一条证据链里。",
         "相关工作比较需要明确分界：选择性 eviction、固定/混合精度量化、prompt compression、paged attention 或 serving scheduler 优化分别解决什么问题；本文新增的系统 insight 应当落在一个清楚的位置上。",
         "如果方法依赖 prefill 阶段统计或生成压缩 artifact，论文需要说明该 artifact 是否可缓存、是否与请求内容绑定、是否影响多租户隔离、是否改变在线服务路径，以及失效或漂移时如何处理。",
+        "架构相关修正项需要更清楚的泛化论证。token importance 和 channel sensitivity 可能随 attention 结构、GQA/head sharing、训练分布和量化友好程度变化；如果 Mistral / DeepSeek 上的表现与其他模型不同，论文应当把这种差异纳入方法边界，单独作为 family-specific behavior 解释和验证。",
     ]
 
     reproducibility = (
@@ -445,7 +473,7 @@ def build_review(manifest: dict, note_path: Path, note_text: str, md_text: str, 
 
     pc_confidential = (
         f"我建议 **{action}**。该工作的问题方向重要，但接收判断不能只由方向重要性或局部收益决定。"
-        f"当前最影响决定的证据项是：{('、'.join(missing) if missing else '基线、公平预算、系统代价和可复现性均已形成可接受支撑')}。"
+        f"当前最影响决定的是：{core_issues}。"
         "如果 rebuttal 能给出重新对齐预算后的主结果和完整 cost breakdown，分数可以上调；若这些问题无法补齐，论文更适合作为设计探索而非成熟系统贡献。"
     )
 
@@ -482,7 +510,7 @@ def build_review(manifest: dict, note_path: Path, note_text: str, md_text: str, 
     lines.extend(["", "## Detailed Comments for Authors", ""])
     lines.extend([f"- {item}" for item in detailed])
     lines.extend(["", "## Scored Review Questions", ""])
-    lines.extend(make_score_reasons(action, scores, missing))
+    lines.extend(make_score_reasons(action, scores, missing, core_issues))
     lines.extend([
         "",
         "## Reproducibility",
