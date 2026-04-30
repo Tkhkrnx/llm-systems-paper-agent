@@ -73,8 +73,11 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 生成 review 时，必须显式检查并尽量在正文中回应以下问题：
 
+- 方法结构是否合理：问题定义、核心假设、方法组件、执行路径和最终 claim 是否闭合；
+- 方法组件是否必要：每个组件是否有清楚作用、消融或替代设计对比，是否存在堆组件但贡献不清的问题；
 - baseline 是否足够强，且是否真正公平；
 - budget / 精度 / 资源约束是否对齐；
+- 实验设计是否全面：质量、容量、延迟、吞吐、可扩展性、失败区间、跨模型/任务/上下文长度是否覆盖；
 - claim 是否超过了证据本身能支撑的范围；
 - 系统代价是否被完整披露，而不是只讲收益；
 - deployment realism 是否充分，例如在线路径、批处理、多租户、尾延迟、工程集成约束；
@@ -93,6 +96,19 @@ allowed-tools: Read, Write, Bash, WebFetch
 6. `## Scored Review Questions`
 7. `## Reproducibility`
 8. `## Confidential Comments to the Program Committee`
+
+其中必须额外包含 `## Multi-Angle Technical Assessment`，从以下角度逐项给出结论：
+
+- 方法结构合理性；
+- 核心技术假设；
+- 组件必要性与消融；
+- 实验合理性；
+- baseline 与预算公平性；
+- 系统代价和部署真实性；
+- claim 与证据是否匹配；
+- artifact / reproducibility。
+
+每一项都要直接下判断：支持、部分支持或不支持，并说明影响接收判断的原因。
 
 ## Strengths / Weaknesses 要求
 

@@ -114,7 +114,7 @@ def collect_paper_facts(md_text: str) -> dict[str, object]:
     facts["h2o_bpt"] = extract_float(r"matched budget of about\s+([0-9.]+)\s*BPT", md_text)
     facts["h2o_gain"] = extract_float(r"mean composite gain of\s+([0-9.]+)", md_text)
     facts["kivi_bpt"] = extract_float(r"matched dense operating point at around\s+([0-9.]+)\s*BPT", md_text)
-    facts["decode_incremental"] = extract_pair(r"decode incremental allocation falls much more sharply to about\s+([0-9.]+)\s*[×x]\s*[–-]\s*([0-9.]+)\s+of vanilla", md_text)
+    facts["decode_incremental"] = extract_pair(r"decode incremental allocation falls much more sharply to about\s+([0-9.]+)\s*(?:[×x])?\s*[–-]\s*([0-9.]+)\s*(?:[×x])?\s+of vanilla", md_text)
     facts["prefill_peak"] = extract_pair(r"prefill peak ratio stays close to parity to moderately above vanilla, ranging from about\s+([0-9.]+)\s+to\s+([0-9.]+)", md_text)
     facts["fit_frontier"] = extract_pair(r"The gain is\s+([0-9.]+)K tokens.*?and\s+([0-9.]+)K on Gemma-7B", md_text)
     facts["ttft"] = extract_triple(r"TTFT rises to\s+([0-9.]+)[×x],\s+([0-9.]+)[×x],\s+and\s+([0-9.]+)[×x]", md_text)
@@ -126,7 +126,9 @@ def collect_paper_facts(md_text: str) -> dict[str, object]:
 def evidence_status(md_text: str, note_text: str) -> dict[str, bool]:
     combined = md_text
     matched_budget = has_any(combined, ["matched budget", "same budget", "under the same budget", "equivalent budget"])
-    cost_breakdown = has_any(combined, ["cost breakdown", "latency breakdown", "tail latency", "throughput", "prefill overhead", "decode overhead", "end-to-end latency"])
+    cost_breakdown = has_any(combined, ["cost breakdown", "latency breakdown", "prefill overhead", "decode overhead", "end-to-end latency", "ttft"])
+    ablation_ready = has_any(combined, ["ablation", "ablate", "remove each", "component analysis", "component-wise", "without token", "without channel", "without correction"])
+    throughput_tail_ready = has_any(combined, ["throughput", "tail latency", "p99", "batching", "requests per second"])
     artifact_ready = has_any(combined, ["reproducibility", "open source", "code release", "artifact evaluation", "artifact appendix", "anonymous code"])
     return {
         "baseline": has_any(combined, ["baseline", "h2o", "kivi", "snapkv", "streamingllm", "quest"]),
@@ -134,10 +136,13 @@ def evidence_status(md_text: str, note_text: str) -> dict[str, bool]:
         "latency": has_any(combined, ["latency", "ttft", "tbot", "runtime", "overhead", "decode time", "prefill time"]),
         "cost_breakdown": cost_breakdown,
         "memory": has_any(combined, ["memory", "hbm", "kv cache", "context-fit", "fit frontier", "capacity"]),
-        "ablation": has_any(combined, ["ablation", "sensitivity", "component", "breakdown"]),
+        "ablation": ablation_ready,
         "deployment": has_any(combined, ["deployment", "batch", "multi-tenant", "online", "throughput", "tail latency", "production"]),
         "artifact": artifact_ready,
         "breadth": has_any(combined, ["models", "datasets", "context lengths", "hardware", "workloads", "tasks"]),
+        "method_structure": has_any(combined, ["token importance", "channel sensitivity", "allocator", "artifact", "workflow", "architecture-aware"]),
+        "assumption": has_any(combined, ["evidence-sensitive", "long-context", "prefill", "decode", "attention", "sensitivity"]),
+        "throughput_tail": throughput_tail_ready,
     }
 
 
@@ -151,8 +156,88 @@ def missing_checks(status: dict[str, bool]) -> list[str]:
         "deployment": "部署真实性",
         "artifact": "artifact 与可复现性",
         "breadth": "跨模型、任务、上下文长度的稳健性",
+        "method_structure": "方法结构闭环",
+        "throughput_tail": "吞吐与尾延迟评估",
     }
     return [label for key, label in labels.items() if not status.get(key)]
+
+
+def verdict(label: str, supported: object, body: str, impact: str) -> str:
+    if isinstance(supported, str):
+        state = supported
+    else:
+        state = "支持" if supported else "部分支持 / 存在缺口"
+    return f"- **{label}**：{state}。{body} {impact}"
+
+
+def multi_angle_assessment(status: dict[str, bool], facts: dict[str, object]) -> list[str]:
+    ttft = facts.get("ttft")
+    decode_latency = facts.get("decode_latency")
+    e2e_latency = facts.get("e2e_latency")
+    latency_text = ""
+    if isinstance(ttft, tuple) and isinstance(decode_latency, tuple) and isinstance(e2e_latency, tuple):
+        latency_text = (
+            f"论文给出的 TTFT 为 {ttft[0]:.2f}x/{ttft[1]:.2f}x/{ttft[2]:.2f}x，"
+            f"decode latency 为 {decode_latency[0]:.2f}x/{decode_latency[1]:.2f}x/{decode_latency[2]:.2f}x，"
+            f"end-to-end latency 为 {e2e_latency[0]:.2f}x/{e2e_latency[1]:.2f}x/{e2e_latency[2]:.2f}x。"
+        )
+    severe_latency = (
+        isinstance(ttft, tuple) and max(ttft) >= 5.0
+    ) or (
+        isinstance(decode_latency, tuple) and max(decode_latency) >= 5.0
+    ) or (
+        isinstance(e2e_latency, tuple) and max(e2e_latency) >= 5.0
+    )
+    return [
+        verdict(
+            "方法结构合理性",
+            status["method_structure"],
+            "方法把 token importance、channel sensitivity、architecture-aware correction、shared budget allocator 和 compressed artifact 串成一条 prefill-to-decode 路径。",
+            "这说明设计结构本身是闭合的；接收风险主要不在 idea 是否能讲通，而在各组件是否被充分验证、以及 runtime 代价是否可接受。",
+        ),
+        verdict(
+            "核心技术假设",
+            status["assumption"],
+            "核心假设是 long-context prompt state 内部存在非均匀价值和非均匀量化敏感度，prefill 阶段能够捕捉这些信号并指导后续 decode。",
+            "该假设与论文问题设置一致，但需要跨模型 family、任务类型和上下文长度证明稳定性；若这些 setting 下信号不稳定，方法优势会退化为特定 workload 上的经验现象。",
+        ),
+        verdict(
+            "组件必要性与消融",
+            "支持" if status["ablation"] else "部分支持 / 存在缺口",
+            "方法由多个组件组成，组件之间的责任分工清楚。",
+            "如果缺少逐组件消融，就无法判断收益主要来自 token importance、channel sensitivity、architecture correction，还是来自整体预算变化；这会削弱技术贡献的可解释性。",
+        ),
+        verdict(
+            "实验合理性",
+            "支持" if (status["breadth"] and status["memory"] and status["latency"] and status["throughput_tail"] and status["ablation"]) else "部分支持 / 存在缺口",
+            "实验覆盖了质量、容量和延迟三条主线，memory/context 结果与 latency 结果共同构成系统评价的基本骨架。",
+            "当前评价仍需要吞吐、tail latency、batching 和失败区间补强；系统论文不能只证明单请求或少数 setting 下的显存收益。",
+        ),
+        verdict(
+            "baseline 与预算公平性",
+            "支持" if (status["baseline"] and status["matched_budget"] and status["cost_breakdown"] and status["artifact"]) else "部分支持 / 存在缺口",
+            "论文选择 H2O、KIVI 等相关路线作为比较对象，并使用 matched-budget 或 dense-to-dense 设置对齐一部分资源约束。",
+            "公平性仍取决于实现路径、kernel 优化程度、metadata 开销和真实 serving 配置是否一致；预算对齐不应只停留在 BPT 数字接近。",
+        ),
+        verdict(
+            "系统代价和部署真实性",
+            "支持" if (status["latency"] and status["cost_breakdown"] and status["deployment"] and status["throughput_tail"] and not severe_latency) else "部分支持 / 存在缺口",
+            latency_text or "论文讨论了 latency / runtime cost，但可定位的吞吐、尾延迟或真实 batching 证据不足。",
+            "该维度是当前最影响接收判断的部分：如果压缩收益伴随数倍 TTFT 或 end-to-end latency，方法需要证明这些成本能被批处理、缓存、流水化或 kernel 融合消化。",
+        ),
+        verdict(
+            "claim 与证据匹配",
+            "支持" if (status["baseline"] and status["matched_budget"] and status["memory"] and status["latency"] and status["breadth"] and not severe_latency) else "部分支持 / 存在缺口",
+            "质量、容量和代价三类证据都被触及，主 claim 有基础支撑。",
+            "结论应限制在论文实际覆盖的模型、数据集、上下文长度和硬件配置内；若作者把它表述成一般 long-context serving 方案，证据强度仍然偏窄。",
+        ),
+        verdict(
+            "artifact / reproducibility",
+            status["artifact"],
+            "可复现性需要代码、artifact、runtime 配置、模型版本、硬件配置和完整实验脚本共同支撑。",
+            "如果这些材料不足，PC 很难判断 latency 与 memory 数字是否来自方法本身，还是来自特定实现和调参路径。",
+        ),
+    ]
 
 
 def infer_action(status: dict[str, bool], facts: dict[str, object]) -> str:
@@ -170,6 +255,10 @@ def infer_action(status: dict[str, bool], facts: dict[str, object]) -> str:
     if not status["artifact"]:
         severe += 1
     if not status["ablation"]:
+        severe += 1
+    if not status["method_structure"]:
+        severe += 2
+    if not status["throughput_tail"]:
         severe += 1
     if not status["matched_budget"] or not status["cost_breakdown"]:
         severe += 2
@@ -238,7 +327,7 @@ def make_strengths(md_text: str, note_text: str, status: dict[str, bool], facts:
     ]
     if status["baseline"] and h2o_bpt is not None and h2o_gain is not None:
         strengths.append(
-            f"主比较不是空架子。论文在约 {h2o_bpt:.0f} BPT 的 matched-budget 设定下对比 H2O，并在正文中明确写到 Figure 6 的每个 model-dataset 组合都保持正增益，平均 composite gain 为 {h2o_gain:.2f}。这说明 dense full-prompt 保留相对于 eviction 路线确实抓住了一类真实脆弱点。"
+            f"主比较具有实质内容。论文在约 {h2o_bpt:.0f} BPT 的 matched-budget 设定下对比 H2O，并在正文中明确写到 Figure 6 的每个 model-dataset 组合都保持正增益，平均 composite gain 为 {h2o_gain:.2f}。这说明 dense full-prompt 保留相对于 eviction 路线确实抓住了一类真实脆弱点。"
         )
     if status["memory"] and isinstance(decode_incremental, tuple) and isinstance(fit_frontier, tuple):
         strengths.append(
@@ -246,7 +335,7 @@ def make_strengths(md_text: str, note_text: str, status: dict[str, bool], facts:
         )
     if method:
         strengths.append(
-            "方法结构清楚，而且和 claim 对得上。论文把 token importance、channel sensitivity、head correction 这三类观测信号直接连到 allocator，再连到 decode 侧的 compressed artifact 消费路径，论证链条是完整的。"
+            "方法结构清楚，而且和 claim 对得上。论文把 token importance、channel sensitivity、head correction 这三类观测信号直接连到 allocator，再连到 decode 侧的 compressed artifact 消费路径。这个结构说明作者给出了一条从 prefill 观测到 decode 消费的完整系统路径。"
         )
     return strengths[:4]
 
@@ -263,11 +352,15 @@ def make_weaknesses(md_text: str, status: dict[str, bool], facts: dict[str, obje
     )
     if isinstance(ttft, tuple) and isinstance(decode_latency, tuple) and isinstance(e2e_latency, tuple):
         weaknesses.append(
-            f"运行时代价已经重到足以改变结论。Figure 9 给出的数字是：TTFT 上升到 {ttft[0]:.2f}x/{ttft[1]:.2f}x/{ttft[2]:.2f}x，decode latency 上升到 {decode_latency[0]:.2f}x/{decode_latency[1]:.2f}x/{decode_latency[2]:.2f}x，end-to-end latency 达到 {e2e_latency[0]:.2f}x/{e2e_latency[1]:.2f}x/{e2e_latency[2]:.2f}x。这样的代价已经不属于“工程上还可再优化”的次要问题，而是当前系统形态能否被部署的核心障碍。"
+            f"运行时代价已经重到足以改变结论。Figure 9 给出的数字是：TTFT 上升到 {ttft[0]:.2f}x/{ttft[1]:.2f}x/{ttft[2]:.2f}x，decode latency 上升到 {decode_latency[0]:.2f}x/{decode_latency[1]:.2f}x/{decode_latency[2]:.2f}x，end-to-end latency 达到 {e2e_latency[0]:.2f}x/{e2e_latency[1]:.2f}x/{e2e_latency[2]:.2f}x。这样的代价已经超出次要工程优化范畴，直接影响当前系统形态能否被部署。"
         )
     weaknesses.append(
         "对 KIVI 的结论写得比证据更满。论文自己承认在 Mistral 和 DeepSeek 的若干 setting 上，KIVI 仍然 competitive，只是把这种现象解释为 family-specific alignment issue。这个解释缺少进一步验证，因此作者目前最多证明了方法在部分 family 上显著占优，还没有证明它是更稳健的一般 dense compression 路线。"
     )
+    if not status.get("ablation"):
+        weaknesses.append(
+            "组件贡献没有被充分拆开。PREFILLCOMP 的方法结构包含 token importance、channel sensitivity、architecture correction 和 allocator，审稿时必须知道每个组件分别贡献了多少收益、去掉后失败在哪些 workload、以及不同组件之间是否互相替代。缺少这种维度的证据，会让方法看起来结构完整，但无法判断技术创新主要来自哪一环。"
+        )
     weaknesses.append(
         "可复现性和部署真实性仍然偏弱。论文把最大开销明确定位到 artifact-build 和 decode-integration path，但没有把这条路径在真实 serving stack 中如何复现、如何与 batching 共存、以及是否会被请求混部放大讲清楚。对于体系结构/系统顶会，这类缺口会直接阻止论文越过 Borderline。"
     )
@@ -340,7 +433,7 @@ def build_review(manifest: dict, note_path: Path, note_text: str, md_text: str, 
     ]
 
     detailed = [
-        "建议作者把 evaluation 的叙述重排为“同预算质量保持、显存/容量收益、端到端延迟、吞吐与尾延迟、组件消融、失败区间”。这样的顺序能直接回答系统论文是否成立，而不是让读者在多个图表之间自行拼接证据。",
+        "建议作者把 evaluation 的叙述重排为“同预算质量保持、显存/容量收益、端到端延迟、吞吐与尾延迟、组件消融、失败区间”。这样的顺序能直接回答系统论文是否成立，避免让读者在多个图表之间自行拼接证据。",
         "相关工作比较需要明确分界：选择性 eviction、固定/混合精度量化、prompt compression、paged attention 或 serving scheduler 优化分别解决什么问题；本文新增的系统 insight 应当落在一个清楚的位置上。",
         "如果方法依赖 prefill 阶段统计或生成压缩 artifact，论文需要说明该 artifact 是否可缓存、是否与请求内容绑定、是否影响多租户隔离、是否改变在线服务路径，以及失效或漂移时如何处理。",
     ]
@@ -372,9 +465,15 @@ def build_review(manifest: dict, note_path: Path, note_text: str, md_text: str, 
         "",
         summary,
         "",
-        "## Strengths",
+        "## Multi-Angle Technical Assessment",
         "",
     ]
+    lines.extend(multi_angle_assessment(status, facts))
+    lines.extend([
+        "",
+        "## Strengths",
+        "",
+    ])
     lines.extend([f"- {item}" for item in strengths])
     lines.extend(["", "## Weaknesses", ""])
     lines.extend([f"- {item}" for item in weaknesses])

@@ -276,7 +276,27 @@ def infer_method_steps() -> List[str]:
     ]
 
 
-def build_key_figure_section(figures: List[dict], manifest: dict) -> str:
+def build_method_summary() -> str:
+    return (
+        "PREFILLCOMP 的整体方法可以概括成一句话：作者把长 prompt 形成的 KV cache 当成一份需要被估值的运行时状态，"
+        "先在 prefill 阶段收集状态价值信号，再把这些信号转成 bit allocation，最后把压缩结果物化成 decode 可以持续消费的 artifact。"
+        "这里真正起作用的是四个组件连起来形成的闭环；单个公式只有放进这条闭环里，才能解释方法为什么能进入 serving 路径。\n\n"
+        "第一，token importance 负责回答“哪些 prompt 位置更可能在后续生成中被用到”。"
+        "因为长上下文任务里的关键信息往往是稀疏证据，系统不能只看状态大小，还要估计状态价值。"
+        "第二，channel sensitivity 负责回答“哪些 KV 维度对量化误差更敏感”。"
+        "这一步把压缩从 token 粒度推进到表示维度粒度，避免所有 channel 被统一低比特处理。"
+        "第三，architecture-aware correction 负责处理模型结构带来的误差放大，尤其是 GQA/head sharing 这类结构会让某些 KV head 被更多 query head 共享。"
+        "第四，shared bit-budget allocator 把前三类信号合并，真正输出每个 token/channel 应该使用多少 bit。"
+        "所以作者是通过“状态观测 -> 价值建模 -> 预算分配 -> artifact 物化”来实现 PREFILLCOMP 的，"
+        "压缩目标只有进入这条系统路径之后才真正变成可执行的方法。\n\n"
+        "这样设计的关键在于时机选择。prefill 阶段一次性看到完整 prompt，因此适合做全局分析；decode 阶段对延迟敏感，因此只适合读取已经准备好的轻量状态。"
+        "PREFILLCOMP 的系统逻辑就是把复杂判断尽量前移到 prefill，把后续 decode 路径变成 artifact consumption。"
+        "这解释了它为什么能降低 decode-side memory，也解释了它为什么会带来 TTFT 和 end-to-end latency 代价："
+        "状态估值和 artifact 构建没有消失，只是被集中放到了首 token 前后的路径里。"
+    )
+
+
+def build_figure_evidence_section(figures: List[dict], manifest: dict) -> str:
     asset_name = Path(manifest["asset_dir"]).name
     caption_by_no = {str(fig.get("number", "")).lower(): fig.get("caption", "") for fig in figures}
     image_files: List[str] = []
@@ -294,25 +314,27 @@ def build_key_figure_section(figures: List[dict], manifest: dict) -> str:
                 scored.append((-score, len(name), name))
         return sorted(scored)[0][2] if scored else None
 
-    # Prefer human-renamed, semantically meaningful images over MinerU extraction order.
-    preferred = [
+    selected = [
         (
             pick_by_keywords(["workflow", "flow", "pipeline", "overview"]),
-            "这张图应该最先看。读它的目的，是把整篇论文的执行路径串起来：prefill 阶段观察 prompt 结构，系统据此生成压缩决策，再把压缩后的 prompt KV 作为 decode 阶段反复消费的状态工件。读图时先从输入 prompt 和原始 KV 开始，顺着箭头看哪些统计量被收集、预算分配器在哪里介入、最终 artifact 如何进入 decode。",
+            "方法框架图",
+            "这张图承担的是方法结构证明的角色。它把 PREFILLCOMP 的四个关键环节放在同一条执行路径上：prefill 生成 prompt KV，系统从 prompt 结构中提取 token importance 和 channel sensitivity，allocator 分配 bit budget，最终生成 compressed prompt artifact 并交给 decode 消费。它主要证明方法链路是否闭合：压缩决策确实从 prefill 的全局观察出发，并且最后进入 decode 的实际数据路径；性能收益还要由后面的实验图支撑。",
         ),
         (
             pick_by_keywords(["decode", "memory", "fit", "capacity"]),
-            "这张图用来判断系统收益是否真的落到了 serving 侧。读它时不要只看最高提升，而要看横轴代表什么 workload 或 context setting、纵轴是在量 memory footprint 还是 context-fit frontier。它回答的是：压缩 prompt KV 之后，decode 阶段到底释放了多少可用显存，以及这种释放是否足以换来更长上下文或更大 batch 的空间。",
+            "内存 / 容量收益图",
+            "这类图承担的是系统收益证明的角色。指标通常包括 decode incremental memory、prefill peak memory 或 context-fit frontier。decode incremental memory 衡量逐 token 生成阶段新增或持续占用的 prompt-side 状态显存；context-fit frontier 衡量同一硬件预算下系统还能塞进多长上下文。它的数据要证明的是：PREFILLCOMP 的压缩收益主要落在 decode 阶段，压缩后的 prompt state 让系统释放了显存，并可能换来更长上下文或更大 batch。",
         ),
         (
             pick_by_keywords(["latency", "ratio", "runtime", "overhead", "breakdown"]),
-            "这张图用来读代价边界。读它时要把额外 latency 拆到具体阶段：prefill 阶段统计结构信号会花时间，artifact build / packing 会花时间，decode 端读取压缩格式也可能带来解包或访问开销。读图时重点看各阶段比例，因为总延迟数字只能告诉你变慢了多少，阶段拆分才能告诉你后续应该优化哪里。",
+            "延迟 / 代价图",
+            "这类图承担的是系统代价证明的角色。TTFT 表示请求开始到第一个 token 生成前的等待时间，主要受 prefill 分析和 artifact 构建影响；decode latency 表示后续逐 token 生成阶段是否被压缩格式读取、解包或额外访存拖慢；end-to-end latency 是用户请求的总耗时。它的数据证明了一个很重要的负面结论：当前实现虽然降低了 decode-side memory，但把显著成本压到了首 token 前路径和整体请求时延里，因此 deployment realism 仍然是主要短板。",
         ),
     ]
 
     used = set()
     lines = []
-    for image_name, explanation in preferred:
+    for image_name, role, explanation in selected:
         if not image_name or image_name in used:
             continue
         used.add(image_name)
@@ -321,7 +343,7 @@ def build_key_figure_section(figures: List[dict], manifest: dict) -> str:
         caption_line = f"\n  MinerU 图注线索：{caption}" if caption else ""
         lines.append(
             f"- ![[20_Research/Papers/_assets/{asset_name}/mineru/{asset_name}/auto/images/{image_name}|800]]\n"
-            f"  {image_name}：{explanation}{caption_line}"
+            f"  **{role}**：{image_name}。{explanation}{caption_line}"
         )
 
     if lines:
@@ -332,9 +354,9 @@ def build_key_figure_section(figures: List[dict], manifest: dict) -> str:
         if image_name:
             return (
                 f"- ![[20_Research/Papers/_assets/{asset_name}/mineru/{asset_name}/auto/images/{image_name}|800]]\n"
-                f"  {image_name}：当前没有找到带语义短名的关键图，因此先保留这张可定位图片。读它时先判断图在说明流程、收益还是代价，再回到正文对应段落核对作者想证明的结论。"
+                f"  {image_name}：当前没有找到带语义短名的关键图，因此先保留这张可定位图片。分析时应判断它在论文论证中承担的是方法框架、质量收益、容量收益还是代价披露，并把图中指标和正文 claim 对齐。"
             )
-    return "- 当前没有自动定位到稳定的关键图。"
+    return "- 当前没有自动定位到稳定的图表。"
 
 
 def build_note(manifest: dict, vault: Path, md_text: str) -> str:
@@ -366,7 +388,8 @@ def build_note(manifest: dict, vault: Path, md_text: str) -> str:
     primer = concept_primer(normalized, domain)
     primer_text = "\n\n".join(f"### {name}\n{body}" for name, body in primer)
     method_steps = "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(infer_method_steps()))
-    figure_text = build_key_figure_section(figures, manifest)
+    method_summary = build_method_summary()
+    figure_text = build_figure_evidence_section(figures, manifest)
 
     source_url = paper_id_to_url(paper_id, manifest.get("source_url", ""))
     pdf_link = obsidian_link(Path(manifest["pdf"]), vault, "原始 PDF")
@@ -511,10 +534,13 @@ updated: "{today}"
 ## 用执行流程讲方法
 {method_steps}
 
+## 方法整体机制总结
+{method_summary}
+
 ## 我怎么理解这篇论文在做什么
 从系统视角看，这篇论文可以按 `state valuation -> budget allocation -> artifact materialization -> decode consumption` 这条链路来理解。第一步，prefill 让系统第一次拥有完整 prompt 的全局视野，因此它能观察 token 之间的 attention 行为和 KV channel 的数值分布。第二步，这些观察结果被转成 token importance 和 channel sensitivity，用来回答“有限精度预算应该优先保护哪些状态”。第三步，allocator 把这些信号变成具体 bit allocation，并生成 compressed prompt artifact。第四步，decode 阶段反复读取这份 artifact，从而降低 prompt-side KV 的持续显存占用。这样讲，PREFILLCOMP 的核心就落到了具体机制上：它把一次性观察到的 prompt 结构，转成了后续推理阶段可以持续使用的状态表示。
 
-## 关键图怎么读
+## 图表证据链：方法图和实验图分别证明什么
 {figure_text}
 
 ## 实验设置和关键结果
@@ -549,32 +575,23 @@ updated: "{today}"
 
 第三个问题是：能否和 continuous batching、prefix caching、prefill-decode disaggregation 联合设计？这些机制都会改变 KV 的生命周期和访问模式，而 PREFILLCOMP 目前更像单请求内的压缩链路。下一步真正有系统味道的工作，是把状态估值和 serving scheduler 放到同一个闭环里。
 
-## 人工阅读重点
-### 必读部分
-**Abstract + Introduction** 必须先读，而且不能只为了摘一句摘要。你要在这一部分确认三个边界：第一，作者为什么把长上下文 KV cache 视为推理系统瓶颈；第二，作者为什么不满意 eviction 和 fixed dense quantization；第三，作者把 PREFILLCOMP 放在 prefill/decode 流程中的哪个位置。读完后，你应该能用自己的话讲清楚：这篇论文解决的是“完整 prompt 状态太大但又不能轻易删”的系统问题，压缩只是实现这个目标的手段。
+## 人工阅读重点：读完笔记后回原文查漏补缺
+读完这份笔记后，不需要从头把论文再顺读一遍。更高效的方式是带着缺口回原文核对：笔记已经帮你建立了问题、方法、图表和局限的主线，原文精读应该用来确认笔记里最容易遗漏或误解的技术细节。
 
-**Method / Design section** 是第二个必须精读的部分。读的时候不要先陷进公式，而要按执行顺序画出链路：prefill 阶段有什么输入，系统收集哪些结构信号，token importance 和 channel sensitivity 分别回答什么问题，allocator 如何把信号变成 bit budget，compressed prompt artifact 里到底装了什么，decode 阶段如何消费它。读完后，你应该能站在白板前顺着 prefill -> allocation -> artifact -> decode 讲完整个方法。
+### 必须回原文核对的部分
+**Method / Design 中关于 token importance、channel sensitivity、architecture-aware correction 和 allocator 的段落** 需要回原文核对。笔记已经说明了这四个组件的作用，但原文里的公式、归一化方式、预算约束和实现细节会决定这个方法到底是启发式规则、可优化目标，还是一个可复用的 runtime policy。读这部分时只需要回答一个问题：作者到底如何把观测信号变成 bit allocation。
 
-**Evaluation section** 是判断论文价值边界的部分。你要把实验分成三类看：质量保持实验说明压缩后模型是否还能用 prompt 证据，memory/context 实验说明系统瓶颈是否被缓解，latency 实验说明额外复杂度是否能被接受。读完后，你不应该只记住“方法有效”，而应该能判断它更适合作为直接部署方案，还是更适合作为 state-aware serving 的研究起点。
+**方法框架图和对应正文说明** 需要回原文核对。这里的目的是确认 workflow 图中的每个箭头是否在正文里有实现解释：prefill 统计在哪里插入，artifact 什么时候生成，metadata 包含什么，decode 如何消费压缩状态。图很清楚但正文缺少实现细节时，你要把它视为系统设计证据不足，而不能只按图理解。
 
-**关键图：workflow、decode memory、latency ratios** 应该穿插着读。workflow 图帮你建立全局心智模型，decode memory 图帮你判断收益是否真的落到 serving 瓶颈，latency 图帮你判断系统代价来自哪里。第一次阅读时，先用这些图把“状态在哪里生成、在哪里压缩、在哪里被消费、代价在哪里出现”讲清楚，再回到公式和实现细节会更顺。
+**实验图中所有核心指标的定义和统计口径** 需要回原文核对，尤其是 BPT、matched budget、decode incremental memory、context-fit frontier、TTFT、decode latency 和 end-to-end latency。笔记里已经解释了这些指标的含义，但原文会告诉你它们是按哪个模型、哪个数据集、哪个上下文长度、哪个 batch 或硬件配置统计出来的。这个口径决定实验结论能不能推广。
 
-### 可跳读部分
-**参考文献与次要数据集描述** 可以第一轮先扫，不必一开始就陷进去。它们对写 related work 有用，但理解本文主链路时可以先放到后面。等你已经能说清 PREFILLCOMP 相对 H2O/KIVI 的定位后，再回头细查相关工作会更高效。
+**Figure 8 / Figure 9 附近的实验设置和结果讨论** 需要回原文核对。Figure 8 主要支撑 memory/context 收益，Figure 9 主要暴露 latency 代价；你回原文看这两处，是为了确认作者有没有把收益和代价放在同一个 serving 场景里比较。如果收益来自一种 setting，代价来自另一种 setting，结论力度就会变弱。
 
-**重复性结果解释段落** 可以在看懂主图和主表后先略读。很多实验段落会反复解释同一趋势，第一次精读时重点应该放在“这个实验回答了哪个系统问题”：它是在说明 fidelity、decode memory、context capacity，还是 latency cost。等主结论建立起来后，再回头补具体数值会更高效。
+### 可以暂时不细读的部分
+参考文献列表、次要数据集介绍和重复解释趋势的结果段落可以先跳过。它们对写 related work 和补充背景有用，但在你已经读完这份笔记之后，最需要补的是方法公式、系统路径和实验口径，背景信息可以放到后面再查。
 
-### 建议精读顺序
-1. 先读 `Abstract + Introduction`，目标是确认论文到底在反驳什么、主张什么，以及它为什么把 dense full-prompt compression 当成独立问题。这个阶段不要急着记技术细节，先把问题边界讲清楚。
-2. 再读动机和已有方法对比，目标是搞清楚 eviction 为什么可能丢证据、fixed dense quantization 为什么浪费预算。读完这一步，你应该能讲出本文方法相对 H2O/KIVI 的位置。
-3. 接着读 `Method / Design`，目标是顺着 prefill -> signal extraction -> allocation -> artifact -> decode 的顺序走一遍。这里建议边读边画流程图，因为这篇论文的价值主要在链路：每个公式都要落回“它为哪个状态决策提供信号”这个问题。
-4. 然后看关键图，先看 workflow 建立整体结构，再看 decode memory 判断收益，再看 latency ratios 判断代价。读图时不断问自己：这张图是在证明方法合理，还是在证明系统可用？
-5. 最后回到 `Evaluation`，带着“收益是否值得代价”这个问题复核结果。如果你能同时说出它省了什么、保住了什么、花了什么成本，才算真正读懂。
-
-### 与用户方向的连接
-它和你的方向直接相连，因为它把推理系统中的状态对象看成可以被估值和重新布局的系统资源。KV cache 在这里承担的是长上下文推理中最关键的运行时状态角色；PREFILLCOMP 做的事情，本质上是给这个状态对象建立价值模型，再用价值模型指导压缩和后续消费。
-
-这篇论文给你的最大启发，是如何把 `一次性结构观察` 变成 `后续阶段可复用的状态决策工件`。这正好可以扩展到你的分层状态优化：未来可以让同一套状态价值信号同时决定 bit-width、memory tier、迁移时机、跨请求复用策略，以及 scheduler 在队列压力变化时应该优先保护哪些状态。
+### 查漏补缺后的判断标准
+回原文核对后，你应该能补上三件事：第一，PREFILLCOMP 的四个组件各自输入什么、输出什么；第二，关键实验图里的每个指标如何定义，数据证明的是质量、容量还是代价；第三，论文当前没有解决的系统问题到底是实现优化问题，还是方法本身泛化性不足。只有这三件事都能回答，才说明你已经越过故事线，真正读到了这篇论文的技术边界。
 
 ## 可提炼的研究命题
 第一个命题：是否可以把本文的 prompt-aware allocation 扩展成跨 memory tier 的 state placement 决策？也就是让 token/channel 的价值估计不仅决定压缩位宽，还决定这部分状态留在 GPU、放到 CPU、迁到 CXL，还是以更低成本格式持久化。
