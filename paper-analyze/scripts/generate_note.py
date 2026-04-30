@@ -265,38 +265,41 @@ def concept_primer(text: str, domain: str) -> List[Tuple[str, str]]:
     return items[:8]
 
 
-def infer_method_steps() -> List[str]:
-    return [
-        "模型先完成 prefill，这时系统一次性看到了完整 prompt，也建立了完整的 prompt-side KV。",
-        "系统在 prefill 中统计哪些 token 对后续 attention 更重要，把这些 token 视为更值得保留精度的状态位置。",
-        "随后系统扫描已经生成的 prompt KV，估计不同 channel 对量化误差的敏感度，判断哪些 channel 不能被粗暴压缩。",
-        "接着它把 token importance、channel sensitivity 和架构修正项放进同一个预算分配器里，决定有限 bit budget 应该怎么分。",
-        "分配结果会被打包成 compressed prompt artifact，里面既有压缩后的 K/V，也有后续 decode 需要的元数据；这样 allocator 的输出才能进入真正的 decode 数据路径。",
-        "decode 阶段回看 prompt 时读取这份 artifact。系统收益来自这里：原本 decode 要带着完整 FP16 prompt KV 走，现在带着压缩后的 prompt 状态走，因此显存占用和可容纳上下文长度会发生变化。",
-    ]
-
-
 def build_method_summary() -> str:
     return (
-        "PREFILLCOMP 的整体方法可以概括成一句话：作者把长 prompt 形成的 KV cache 当成一份需要被估值的运行时状态，"
-        "先在 prefill 阶段收集状态价值信号，再把这些信号转成 bit allocation，最后把压缩结果物化成 decode 可以持续消费的 artifact。"
-        "这里真正起作用的是四个组件连起来形成的闭环；单个公式只有放进这条闭环里，才能解释方法为什么能进入 serving 路径。\n\n"
-        "第一，token importance 负责回答“哪些 prompt 位置更可能在后续生成中被用到”。"
-        "因为长上下文任务里的关键信息往往是稀疏证据，系统不能只看状态大小，还要估计状态价值。"
-        "第二，channel sensitivity 负责回答“哪些 KV 维度对量化误差更敏感”。"
-        "这一步把压缩从 token 粒度推进到表示维度粒度，避免所有 channel 被统一低比特处理。"
-        "第三，architecture-aware correction 负责处理模型结构带来的误差放大，尤其是 GQA/head sharing 这类结构会让某些 KV head 被更多 query head 共享。"
-        "第四，shared bit-budget allocator 把前三类信号合并，真正输出每个 token/channel 应该使用多少 bit。"
-        "所以作者是通过“状态观测 -> 价值建模 -> 预算分配 -> artifact 物化”来实现 PREFILLCOMP 的，"
-        "压缩目标只有进入这条系统路径之后才真正变成可执行的方法。\n\n"
-        "这样设计的关键在于时机选择。prefill 阶段一次性看到完整 prompt，因此适合做全局分析；decode 阶段对延迟敏感，因此只适合读取已经准备好的轻量状态。"
-        "PREFILLCOMP 的系统逻辑就是把复杂判断尽量前移到 prefill，把后续 decode 路径变成 artifact consumption。"
-        "这解释了它为什么能降低 decode-side memory，也解释了它为什么会带来 TTFT 和 end-to-end latency 代价："
-        "状态估值和 artifact 构建没有消失，只是被集中放到了首 token 前后的路径里。"
+        "PREFILLCOMP 的方法本质上是一条从 prefill 观测到 decode 消费的完整状态处理链路，单独看某个压缩公式无法解释它的系统作用。"
+        "这条链路可以按原文的五个 phase 来讲，每一阶段都有明确输入、输出和系统作用。\n\n"
+        "第一阶段是 **Prefill-Time Prompt Importance Extraction**。它的输入是 prefill 过程中已经计算出来的 causal attention 权重。"
+        "因为自回归 Transformer 的注意力是因果的，位置 `t` 只能看见 `i <= t` 的 prompt 位置，所以每个 prompt token 被后续位置关注的总量可以作为一种“后续生成可能依赖它”的信号。"
+        "原文把 layer、KV head 和后续 timestep 上指向同一 prompt position `i` 的 attention-column mass 累加起来，再用归一化常数把所有 token 的分数归一化为 importance vector。"
+        "这样做为什么能用：它直接利用当前 prompt 在当前模型 prefill 中产生的真实 attention 行为，不依赖词频、位置或离线启发式去猜重要性。"
+        "它的好处是不用额外跑一次模型；实现上作者 patch HuggingFace eager attention path，在 chunked prefill 时 inline 计算 causal attention probabilities 并累加列和。"
+        "这一阶段的输出是一条 prompt-specific token importance profile，告诉后续 allocator 哪些 prompt 位置更值得保留高精度。\n\n"
+        "第二阶段是 **Channel Sensitivity Characterization**。第一阶段只回答“哪个 token 重要”，但每个 token 的 K/V 表示内部还有很多 channel；同一个 token 的不同 channel 对量化误差的容忍度并不一样。"
+        "这一阶段的输入是 prefill 已经物化出来的 prompt KV cache。作者对每一层、每个 KV head、每个 channel，在完整 prompt 维度上计算最小值和动态范围，并在 head 内归一化这些 range。"
+        "这里的底层逻辑是：动态范围大的 channel 在低比特量化时更容易产生大绝对误差，或者需要更多 bit 才能把相对误差压住；动态范围小的 channel 往往可以更激进压缩。"
+        "这一步为什么可以放在 prefill 之后做：prompt KV 已经存在，系统只是在现有张量上做 reduction，不需要重新 forward。"
+        "它的输出是 K/V channel-level sensitivity profile，告诉 allocator 哪些表示维度更怕压缩。\n\n"
+        "第三阶段是 **Joint Budgeted Allocation**。这一阶段把前两阶段的信号真正变成 bit 分配。"
+        "原文对每个 layer、KV head、prompt position、channel 和 K/V 类型构造联合权重：`token importance × normalized channel range × architecture-aware correction`。"
+        "这里的 architecture-aware correction 主要处理 supported GQA 模型：在 grouped-query attention 里，一个 KV head 会被多个 query head 共享，所以同一个 KV head 的误差会影响更多 downstream attention path。"
+        "原文用 query-head sharing factor `G` 和 head dimension 归一化项来修正这种敏感度；标准 MHA 下 correction 默认是 1。"
+        "得到联合权重后，PREFILLCOMP 用 water-filling-style Lagrangian allocation 在目标平均 bit budget 下分配 variable precision。"
+        "可以把它理解为：全局预算固定，权重大、误差更关键的位置拿更多 bit，权重小的位置拿更少 bit，最后再裁剪到支持的精度档位。"
+        "这一阶段的输出已经落到具体的 per-token/per-channel/per-KV-type bit allocation，而不只是抽象分数。\n\n"
+        "第四阶段是 **Compressed Prompt Artifact Construction**。第三阶段只决定“哪里用多少 bit”，第四阶段把这个决策变成 decode 真的能读取的数据对象。"
+        "artifact 里至少有三类内容：压缩打包后的 prompt K/V payload，重构这些 payload 需要的 bit-width、min/range 等 metadata，以及让 decode path 能快速定位 prompt tile 的 indexing 信息。"
+        "这一步很关键，因为没有 artifact，前面的 importance、sensitivity 和 allocator 仍然只是分析结果；有了 artifact，它们才变成 runtime 可以保存、传递、读取的 prompt-side state。"
+        "它的好处是把 full prompt KV 从 FP16 dense cache 变成 packed compressed representation，同时不再需要额外保留第二份完整 dense prompt copy。\n\n"
+        "第五阶段是 **Decode-Time Integration**。decode 仍然按自回归方式生成新 token，新生成 token 的 KV 也正常增长；变化发生在模型回看 prompt-side state 时。"
+        "此时 attention 的 prompt-side 访问路径改成通过 patched decode attention path 从 compressed prompt artifact 中按需解包所需 K/V tile，完整 FP16 prompt cache 不再作为主要读取对象。"
+        "原文实现里用 Triton kernel 支持 tiled fast path，同时保留 fallback。"
+        "这一步的系统意义是把 prefill 的一次性分析成本摊到后续多次 decode 访问上：prompt state 是 write-once/read-many，先花代价估值和压缩，后续每一步 decode 都消费同一份压缩状态。"
+        "因此 PREFILLCOMP 的收益和代价也都很清楚：收益来自 decode 阶段持续读取更小的 prompt state；代价来自 prefill 侧统计、artifact build、metadata 组织和 decode 侧按需解包。"
     )
 
 
-def build_figure_evidence_section(figures: List[dict], manifest: dict) -> str:
+def build_framework_figure_section(figures: List[dict], manifest: dict) -> str:
     asset_name = Path(manifest["asset_dir"]).name
     caption_by_no = {str(fig.get("number", "")).lower(): fig.get("caption", "") for fig in figures}
     image_files: List[str] = []
@@ -314,49 +317,72 @@ def build_figure_evidence_section(figures: List[dict], manifest: dict) -> str:
                 scored.append((-score, len(name), name))
         return sorted(scored)[0][2] if scored else None
 
-    selected = [
-        (
-            pick_by_keywords(["workflow", "flow", "pipeline", "overview"]),
-            "方法框架图",
-            "这张图承担的是方法结构证明的角色。它把 PREFILLCOMP 的四个关键环节放在同一条执行路径上：prefill 生成 prompt KV，系统从 prompt 结构中提取 token importance 和 channel sensitivity，allocator 分配 bit budget，最终生成 compressed prompt artifact 并交给 decode 消费。它主要证明方法链路是否闭合：压缩决策确实从 prefill 的全局观察出发，并且最后进入 decode 的实际数据路径；性能收益还要由后面的实验图支撑。",
-        ),
-        (
-            pick_by_keywords(["decode", "memory", "fit", "capacity"]),
-            "内存 / 容量收益图",
-            "这类图承担的是系统收益证明的角色。指标通常包括 decode incremental memory、prefill peak memory 或 context-fit frontier。decode incremental memory 衡量逐 token 生成阶段新增或持续占用的 prompt-side 状态显存；context-fit frontier 衡量同一硬件预算下系统还能塞进多长上下文。它的数据要证明的是：PREFILLCOMP 的压缩收益主要落在 decode 阶段，压缩后的 prompt state 让系统释放了显存，并可能换来更长上下文或更大 batch。",
-        ),
-        (
-            pick_by_keywords(["latency", "ratio", "runtime", "overhead", "breakdown"]),
-            "延迟 / 代价图",
-            "这类图承担的是系统代价证明的角色。TTFT 表示请求开始到第一个 token 生成前的等待时间，主要受 prefill 分析和 artifact 构建影响；decode latency 表示后续逐 token 生成阶段是否被压缩格式读取、解包或额外访存拖慢；end-to-end latency 是用户请求的总耗时。它的数据证明了一个很重要的负面结论：当前实现虽然降低了 decode-side memory，但把显著成本压到了首 token 前路径和整体请求时延里，因此 deployment realism 仍然是主要短板。",
-        ),
-    ]
-
-    used = set()
-    lines = []
-    for image_name, role, explanation in selected:
-        if not image_name or image_name in used:
-            continue
-        used.add(image_name)
+    image_name = pick_by_keywords(["workflow", "flow", "pipeline", "overview"]) or resolve_image_name("5", manifest)
+    if image_name:
         fig_no_match = re.search(r"fig0?(\d+[a-z]?)", image_name.lower())
         caption = caption_by_no.get(fig_no_match.group(1), "") if fig_no_match else ""
-        caption_line = f"\n  MinerU 图注线索：{caption}" if caption else ""
-        lines.append(
-            f"- ![[20_Research/Papers/_assets/{asset_name}/mineru/{asset_name}/auto/images/{image_name}|800]]\n"
-            f"  **{role}**：{image_name}。{explanation}{caption_line}"
+        caption_line = f"\n\nMinerU 图注线索：{caption}" if caption else ""
+        return (
+            f"![[20_Research/Papers/_assets/{asset_name}/mineru/{asset_name}/auto/images/{image_name}|800]]\n\n"
+            "这张框架图只用来帮助建立方法的整体地图，不再承担实验结论解释。顺着图读，PREFILLCOMP 的数据流是："
+            "prefill 先生成完整 prompt KV，同时收集 prompt-token importance；随后系统扫描已经物化的 KV cache，得到 channel-level sensitivity；"
+            "allocator 把 token、channel 和 architecture-aware correction 三类信号合并，在 shared bit budget 下决定不同位置和维度的 bit-width；"
+            "接着 Phase 4 把分配结果打包成 compressed prompt artifact；最后 decode 阶段在回看 prompt 时消费这份 artifact，完整 FP16 prompt cache 不再是主要 prompt-side 读取对象。"
+            "这张图最重要的作用是把“观察发生在 prefill、状态物化成 artifact、收益发生在 decode”这三件事连起来。"
+            "它说明方法是一条插进 serving path 的状态生命周期：生成状态、估值状态、重编码状态、再消费状态；离线量化表无法表达这条运行时链路。"
+            f"{caption_line}"
         )
-
-    if lines:
-        return "\n".join(lines)
 
     for fig in figures:
         image_name = resolve_image_name(fig["number"], manifest)
         if image_name:
             return (
-                f"- ![[20_Research/Papers/_assets/{asset_name}/mineru/{asset_name}/auto/images/{image_name}|800]]\n"
-                f"  {image_name}：当前没有找到带语义短名的关键图，因此先保留这张可定位图片。分析时应判断它在论文论证中承担的是方法框架、质量收益、容量收益还是代价披露，并把图中指标和正文 claim 对齐。"
+                f"![[20_Research/Papers/_assets/{asset_name}/mineru/{asset_name}/auto/images/{image_name}|800]]\n\n"
+                "当前没有找到带 workflow/overview 语义短名的框架图，因此保留这张可定位图片。人工核对时应优先确认它是否对应方法 workflow；如果不对应，应回到 MinerU 图片目录选择真正的框架图。"
             )
-    return "- 当前没有自动定位到稳定的图表。"
+    return "当前没有自动定位到稳定的方法框架图。"
+
+
+def build_experiment_results(facts: dict) -> str:
+    h2o_bpt = fmt_fact(facts.get("h2o_bpt"))
+    h2o_gain = fmt_fact(facts.get("h2o_gain"))
+    kivi_bpt = fmt_fact(facts.get("kivi_bpt"))
+    decode_incremental = fmt_fact(facts.get("decode_incremental"))
+    prefill_peak = fmt_fact(facts.get("prefill_peak"))
+    fit_frontier = fmt_fact(facts.get("fit_frontier"))
+    ttft = fmt_fact(facts.get("ttft"))
+    decode_latency = fmt_fact(facts.get("decode_latency"))
+    e2e_latency = fmt_fact(facts.get("e2e_latency"))
+    return f"""### 实验设置
+原文实验在单张 NVIDIA A100-40GB 上完成，使用 PyTorch、Transformers 和 Triton 组成的实现路径。这个设置要注意两点：第一，quality-oriented comparison 使用 integrated prompt-compression path；第二，systems-oriented result 使用 packed artifact path，并把 metadata accounting 纳入统计。论文把压缩后的 prompt artifact 放进实际 serving 路径里评估，评价对象不止是名义上的低比特模拟。模型覆盖 LLaMA-2-7B、Mistral-7B-v0.3、Gemma-7B-it、LLaMA-3.1-8B 和 DeepSeek-7B-Base，数据集覆盖 TriviaQA、2WikiMQA、GovReport，并额外用 NIAH 做系统容量压力测试。baseline 选择也围绕本文 claim 展开：H2O 代表 selective-retention / eviction 路线，KIVI 代表 fixed dense quantization 路线。
+
+### Figure 1：dense full-prompt compression 为什么值得做
+Figure 1 是 motivation 实验，主要负责支撑设计目标，完整方法的主结果还要看后面的 RQ 实验。它在约 {h2o_bpt} BPT 的 matched budget 下，用 TriviaQA 比较 PREFILLCOMP 和 H2O，并用 oracle-aligned BERTScore 衡量输出与 vanilla FP16 输出的接近程度。BPT 是平均每个 prompt token 使用多少 bit 来存储压缩后的 prompt state；matched budget 的意义是避免“谁用更多显存谁更好”的不公平比较。这个图证明的是：在 evidence-sensitive QA 中，保留 full prompt coverage 再降低精度，确实可能比直接 eviction 更稳。它给后文的方法设计提供动机，但还不能单独证明完整方法成立，因为这里主要是设计目标验证。
+
+### Figure 2：为什么需要 token importance
+Figure 2 验证 prompt-token influence 是否高度集中。图里的核心含义是：少量 prompt positions 承担了不成比例的 aggregate importance。这个观察支撑 Phase 1 的 causal-attention importance extraction：如果每个 token 对后续生成的影响差不多，那么按 token 分配不同 bit 没有必要；但如果影响高度偏斜，把更多精度给高影响 token 就有系统意义。这里的指标本质上是在问“哪些 prompt 位置被后续 causal attention 反复使用”。它证明 token 维度存在非均匀性。
+
+### Figure 3：为什么还需要 channel sensitivity
+Figure 3 验证 KV channel 维度也有明显非均匀性。原文计算每个 KV head 内不同 channel 的 dynamic range ratio，并在固定相对误差目标 epsilon = 5% 下估计可节省的 bit。dynamic range ratio 越大，说明同一个 head 内的 channel 分布差异越明显；在量化时，range 大的 channel 往往更需要精度保护，range 小的 channel 可以更激进压缩。这个图证明 Phase 2 有独立作用：只知道哪个 token 重要还不够，因为同一个 token 的不同 channel 对量化误差的敏感度也不同。
+
+### Figure 4：为什么需要 architecture-aware correction
+Figure 4 处理的是 GQA/head sharing 带来的结构性误差放大。GQA 中一个 KV head 会服务多个 query heads，所以压缩同一个 KV head 可能影响更多 downstream attention path。Figure 4(a) 看 normalized sensitivity 是否落在 acceptance band 内，Figure 4(b) 展示 raw amplification 和 correction 后的 normalized ratio。原文结果说明 LLaMA-3.1 和 Mistral 这类 supported GQA cases 上，head sharing 造成的 sensitivity shift 强且可预测；DeepSeek 和 Gemma 不完全符合该 correction。这个图支撑 Phase 3 的 architecture-aware term，同时也给出方法边界：correction 的证据主要落在 supported GQA family 上，不能直接外推成所有架构上的普适规律。
+
+### Figure 5：方法框架图
+Figure 5 是方法 workflow 图，它把 Phase 1 到 Phase 5 连成完整路径：prefill 提取 token importance，post-prefill 扫描 KV 得到 channel sensitivity，allocator 联合分配 bit，artifact construction 打包 prompt K/V 和 metadata，decode integration 按需消费压缩 artifact。这个图证明的是系统链路闭合，不证明性能收益。性能收益要看 Figure 6 到 Figure 9。
+
+### Figure 6：与 H2O 的 matched-budget 对比
+Figure 6 是回答 RQ1 的主图。实验问题是：在相同或相近存储预算下，保留所有 prompt token 并降低精度，是否比 eviction 更稳。Figure 6(a) 把 ROUGE-L、BLEU、cosine similarity 和 BERTScore 都作为与 vanilla FP16 oracle output 的接近程度来评估；Figure 6(b) 把结果汇总到 model-dataset combination 层面。原文给出的平均增益包括 +0.343 ROUGE-L、+0.296 BLEU、+0.347 cosine similarity、+0.107 BERTScore，composite gain 平均为 {h2o_gain}，且展示的组合都为正。这个结果支撑本文最核心的质量 claim：在证据敏感 workload 下，dense preservation 比 eviction 更不容易破坏输出行为。
+
+### Figure 7：与 KIVI 的 dense-to-dense 对比
+Figure 7 回答 RQ2：当两种方法都保留 full prompt context 时，prompt-aware variable-rate allocation 是否比 fixed low-bit quantization 更会花预算。原文把 KIVI-4bit 和 PREFILLCOMP 放在约 {kivi_bpt} effective BPT 的操作点比较，因为 KIVI 的 metadata 会让名义 4-bit 接近 5 BPT。图中 BLEU 和 ROUGE-L 显示 LLaMA-2、LLaMA-3.1 等 setting 上 PREFILLCOMP 有大幅提升，例如 L2-TQA 上 BLEU 从 0.123 到 0.760，ROUGE-L 从 0.317 到 0.843。这个图证明 variable-rate allocation 在部分 model family 上确实比固定 dense policy 更有效；同时 Mistral 和 DeepSeek 上 KIVI 仍有 competitive cases，这说明 prompt-aware signal 和 allocator 的有效性存在 family-specific boundary。
+
+### Figure 8：系统内存和容量收益
+Figure 8 回答 RQ3：PREFILLCOMP 给 serving 系统带来什么 memory behavior 和 fit capacity 收益。Figure 8(a) 区分 prefill peak、decode peak 和 decode incremental allocation。prefill peak ratio 大约为 {prefill_peak}，说明 prefill 侧因为统计和 artifact 构建并没有明显省内存；decode incremental memory 降到 vanilla 的 {decode_incremental}，说明真正收益出现在反复消费 prompt state 的 decode 阶段。Figure 8(b) 看 context-fit frontier，原文报告 LLaMA-2、LLaMA-3.1、Mistral、DeepSeek 提升约 5K tokens，Gemma-7B 提升约 4K tokens，把 frontier 从约 7-8K 推到 12K。这个结果支撑系统收益 claim：压缩 prompt artifact 能降低 decode-side state pressure，并把显存收益转化为更长可服务上下文。
+
+### Figure 9：运行时代价和瓶颈来源
+Figure 9 回答 RQ4：当前 runtime cost 从哪里来。Figure 9(a) 给出 latency ratios：TTFT 为 {ttft}x，decode latency 为 {decode_latency}x，end-to-end latency 为 {e2e_latency}x。TTFT 高说明首 token 前路径很重，通常来自 prefill 分析、artifact build 和 metadata 组织；decode latency 高说明按需读取和解包压缩格式也拖慢了生成阶段；end-to-end latency 高说明这些代价最终没有被系统完全摊掉。Figure 9(b) 进一步显示 Phase 4-5 work 占 method TTFT 的约 0.77/0.76/0.75，说明主要瓶颈集中在 artifact build 和 decode integration path，代价并非均匀散落在整个系统里。这个图是本文最重要的负面证据：方法确实换来了 memory/capacity 收益，但当前实现还没有达到低延迟 serving 所需的成熟度。
+"""
 
 
 def build_note(manifest: dict, vault: Path, md_text: str) -> str:
@@ -387,9 +413,9 @@ def build_note(manifest: dict, vault: Path, md_text: str) -> str:
 
     primer = concept_primer(normalized, domain)
     primer_text = "\n\n".join(f"### {name}\n{body}" for name, body in primer)
-    method_steps = "\n".join(f"{idx + 1}. {step}" for idx, step in enumerate(infer_method_steps()))
     method_summary = build_method_summary()
-    figure_text = build_figure_evidence_section(figures, manifest)
+    framework_figure_text = build_framework_figure_section(figures, manifest)
+    experiment_results = build_experiment_results(facts)
 
     source_url = paper_id_to_url(paper_id, manifest.get("source_url", ""))
     pdf_link = obsidian_link(Path(manifest["pdf"]), vault, "原始 PDF")
@@ -531,28 +557,14 @@ updated: "{today}"
 ### 5. Remaining systems gap
 这篇论文最明显的系统短板是 runtime cost，尤其 prompt-side artifact build 和 decode integration 的延迟代价较高。更具体地说，PREFILLCOMP 证明了“prefill 原生状态估值 + 稠密压缩”这个 design point 有价值，但生产级 serving 栈还需要回答更多工程问题：统计和压缩能否和 prefill kernel 融合，artifact format 能否被高效分页和调度，压缩状态能否跨请求、跨 GPU、跨 memory tier 复用，以及它和 continuous batching / prefix caching / prefill-decode disaggregation 放在一起时会不会产生新的瓶颈。因此这篇论文适合作为 state-aware serving 的研究起点，后续工作需要把状态表示和 runtime 管理真正接起来。
 
-## 用执行流程讲方法
-{method_steps}
-
 ## 方法整体机制总结
 {method_summary}
 
-## 我怎么理解这篇论文在做什么
-从系统视角看，这篇论文可以按 `state valuation -> budget allocation -> artifact materialization -> decode consumption` 这条链路来理解。第一步，prefill 让系统第一次拥有完整 prompt 的全局视野，因此它能观察 token 之间的 attention 行为和 KV channel 的数值分布。第二步，这些观察结果被转成 token importance 和 channel sensitivity，用来回答“有限精度预算应该优先保护哪些状态”。第三步，allocator 把这些信号变成具体 bit allocation，并生成 compressed prompt artifact。第四步，decode 阶段反复读取这份 artifact，从而降低 prompt-side KV 的持续显存占用。这样讲，PREFILLCOMP 的核心就落到了具体机制上：它把一次性观察到的 prompt 结构，转成了后续推理阶段可以持续使用的状态表示。
-
-## 图表证据链：方法图和实验图分别证明什么
-{figure_text}
+## 分析框架图
+{framework_figure_text}
 
 ## 实验设置和关键结果
-### 实验设置
-实验主要围绕三个边界展开：一是和 eviction 路线比，在相同预算下是否更稳；二是和固定低比特 dense quantization 比，是否能利用 prompt 结构拿到更好的 fidelity；三是系统侧究竟换来了多少显存/容量收益，又付出了多少延迟成本。这里的 fidelity 关注模型输出质量和证据利用是否被破坏，memory/context 关注省下的显存能否换成更长上下文或更大 batch，latency 关注用户请求路径是否被新机制拖慢。读实验时要把这些问题分开，不要混成“效果好不好”一句话。
-
-### 关键结果
-先看 fidelity：作者在约 {h2o_bpt} BPT 的 matched-budget 设置下和 H2O 比，Figure 6 中展示的 model-dataset 组合都保持正增益，平均 composite gain 是 {h2o_gain}。这个结果要这样理解：H2O 通过删状态来省显存，PREFILLCOMP 通过降低不同状态的精度来省显存；当任务需要保留细粒度 prompt 证据时，保留完整覆盖范围会更稳。
-
-再看 systems：Figure 8 显示 prefill peak memory 大约是 vanilla 的 {prefill_peak}，decode incremental memory 降到 {decode_incremental}，fit frontier 扩展约 {fit_frontier}K tokens。这里的逻辑是：prefill 阶段会付出额外统计和 artifact 构建开销，所以 peak memory 没有明显下降；真正的收益出现在 decode 阶段，因为此时系统反复读取的是压缩后的 prompt state。
-
-最后看代价：Figure 9 给出的 TTFT 是 {ttft}x，decode latency 是 {decode_latency}x，end-to-end latency 是 {e2e_latency}x。TTFT 衡量首 token 之前的等待时间，里面会包含 prefill、结构统计、artifact 构建等前置成本；decode latency 衡量后续逐 token 生成阶段是否被压缩格式读取和解包拖慢；end-to-end latency 则把用户请求从开始到完成的总耗时算进去。这个数字很关键，因为它说明当前版本已经把 memory/context 问题往前推进了一步，但还没有把在线延迟问题解决掉。下一步系统优化的入口也很清楚：统计逻辑能否下沉到 kernel，artifact build 能否流水化，压缩结果能否缓存复用，decode 端读取压缩格式能否减少解包开销。
+{experiment_results}
 
 ## 与已有工作的关系
 作者实际上在和两条路线对话：一条是 H2O 这类 eviction / selective retention 路线，另一条是 KIVI 这类 fixed dense quantization 路线。H2O 的核心问题是“在预算有限时哪些 token 应该留下”，所以它改变的是状态覆盖范围；KIVI 的核心问题是“整份 KV 能否用统一低比特表示”，所以它主要改变的是整体表示精度；PREFILLCOMP 的问题设定介于二者之间，它保留 full prompt coverage，然后在 token 和 channel 两个维度上分配不同精度。这个定位很关键，因为它把状态管理从二选一的“保留/删除”扩展成更细粒度的“保留范围 + 表示精度 + 后续消费格式”联合设计。
