@@ -72,12 +72,13 @@ allowed-tools: Read, Write, Bash, WebFetch
 
 # 输出风格硬约束
 
-整篇笔记都必须写成“讲给课题组同学听”的教学式长段解释，而不只是导师七问如此。默认读者是具备科研训练、但不熟悉本文具体方向的研究生。
+整篇笔记都必须写成“讲给课题组同学听”的教学式长段解释，而不只是导师七问如此。默认读者是具备科研训练、了解大模型基础概念、但记得不牢且理解不深入的研究生；因此解释必须把大模型基础知识、系统背景知识和论文机制连起来，不能默认读者已经能把 attention、KV cache、量化、GPU kernel、访存瓶颈这些概念自动串通。
 
 - 不要把 MinerU 原文大段粘进笔记；笔记应该是中文解释、系统化转述和研究视角分析。
 - 不要写成短句提纲。除论文基本信息外，核心小节里的每个要点都应至少用一段话讲清背景、本文做法、为什么这样设计、结果意味着什么。
 - 避免用“不是……而是……”“直觉很像……”这类转折套话代替解释。需要从底层逻辑逐层讲：问题为什么出现、原文具体机制是什么、该机制解决了哪一步、论文用什么实验或数字支撑、读者应该怎样理解这个结果。
 - 如果出现 KV cache、prefill、decode、dense compression、eviction、paged KV、prefix caching、memory tiering 等概念，必须先用研究生能听懂的方式解释它们在本文中扮演的角色。
+- 方法机制解释必须按“这一阶段要解决什么问题 -> 原文具体怎么做 -> 为什么能这样做 -> 工程收益和代价是什么”的层次展开。不能只说“利用 attention 提取 importance”“扫描 KV 得到 sensitivity”“allocator 分配 bit”，必须讲清 attention 矩阵为什么能反映 token 被后续位置使用、为什么列求和对应 token importance、为什么扫描已生成 KV cache 不需要额外 forward、为什么二分/水位线能满足全局 bit budget、为什么 artifact 需要 payload/metadata/index、为什么 decode 要用底层 kernel 按需解包。
 - 方法名、缩写、workload 类型和实验指标都必须解释清楚。比如 evidence-sensitive workload、TTFT、decode latency、end-to-end latency、BPT、matched budget、artifact、throughput、p99 latency、context-fit frontier 等，不能假设读者已经知道；解释时要说明“这个术语在本文里衡量什么、为什么会影响系统结论、读对应图表时应该怎么理解”。
 - 导师七问、综述五字段、方法整体机制总结、分析框架图、实验、局限、人工阅读重点、研究命题都要保持这种讲解口吻，不能只列关键词。
 - 但凡属于“判断性内容”而不是“说明性内容”，例如局限性、open gap、与已有工作的边界、实验是否真正支持 claim、对你研究方向的可借鉴之处，都必须采用接近严格审稿的证据标准来写：判断应尽量锚定论文原文、图表、实验设置与正式结果，避免轻飘的启发式评价。
