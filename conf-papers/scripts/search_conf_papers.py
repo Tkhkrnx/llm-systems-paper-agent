@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-顶级会议论文搜索脚本
+CCF A 类会议 / 期刊论文搜索脚本
 使用 DBLP API 获取论文列表 + Semantic Scholar API 补充引用数和摘要
-支持 CVPR/ICCV/ECCV/ICLR/AAAI/NeurIPS/ICML 等顶会
+默认优先覆盖 CCF A 类会议，并支持补充系统相关 A 类期刊。
 """
 
 import json
@@ -17,6 +17,15 @@ import urllib.request
 import urllib.parse
 
 logger = logging.getLogger(__name__)
+
+
+def emit_json_output(payload: Dict) -> None:
+    """Print JSON safely across terminals with limited default encodings."""
+    text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    try:
+        sys.stdout.write(text + "\n")
+    except UnicodeEncodeError:
+        sys.stdout.buffer.write((text + "\n").encode("utf-8", errors="replace"))
 
 
 def title_to_note_filename(title: str) -> str:
@@ -54,13 +63,11 @@ from search_arxiv import (
 )
 
 # ---------------------------------------------------------------------------
-# 会议配置
+# Venue 配置
 # ---------------------------------------------------------------------------
-# DBLP toc key 映射：用于 toc:db/conf/... 查询格式
-# value = (conf_path, toc_name_template)
-# toc_name_template 中 {year} 会被替换为实际年份
-# 对于无法用 toc 查询的会议（如 ECCV），使用 venue+year 备选查询
-DBLP_VENUES = {
+# 会议：DBLP toc key 映射：用于 toc:db/conf/... 查询格式
+# 对于无法用 toc 查询的会议，使用 venue+year 备选查询
+DBLP_CONFERENCES = {
     # Systems / architecture / HPC / parallel / data systems
     "MICRO": {"toc": "conf/micro", "toc_name": "micro{year}", "venue_query": "MICRO"},
     "ASPLOS": {"toc": "conf/asplos", "toc_name": "asplos{year}", "venue_query": "ASPLOS"},
@@ -103,6 +110,24 @@ DBLP_VENUES = {
     "MICCAI": {"toc": "conf/miccai", "toc_name": None, "venue_query": "MICCAI"},
 }
 
+# 期刊：优先使用 venue + year 查询
+DBLP_JOURNALS = {
+    # System-related CCF A journals
+    "TOCS": {"venue_query": "ACM Transactions on Computer Systems"},
+    "TOS": {"venue_query": "ACM Transactions on Storage"},
+    "TACO": {"venue_query": "ACM Transactions on Architecture and Code Optimization"},
+    "TOPLAS": {"venue_query": "ACM Transactions on Programming Languages and Systems"},
+    "TOSEM": {"venue_query": "ACM Transactions on Software Engineering and Methodology"},
+    "TSE": {"venue_query": "IEEE Transactions on Software Engineering"},
+    "TC": {"venue_query": "IEEE Transactions on Computers"},
+    "TPDS": {"venue_query": "IEEE Transactions on Parallel and Distributed Systems"},
+    "TKDE": {"venue_query": "IEEE Transactions on Knowledge and Data Engineering"},
+    "TODS": {"venue_query": "ACM Transactions on Database Systems"},
+    "VLDBJ": {"venue_query": "The VLDB Journal"},
+    "JSAC": {"venue_query": "IEEE Journal on Selected Areas in Communications"},
+    "TON": {"venue_query": "IEEE/ACM Transactions on Networking"},
+}
+
 VENUE_TO_CATEGORIES = {
     "MICRO": ["cs.AR", "cs.PF"],
     "ASPLOS": ["cs.AR", "cs.OS", "cs.PF"],
@@ -141,12 +166,47 @@ VENUE_TO_CATEGORIES = {
     "ICCV": ["cs.CV"],
     "ECCV": ["cs.CV"],
     "MICCAI": ["cs.CV", "eess.IV"],
+    "TOCS": ["cs.OS", "cs.DC"],
+    "TOS": ["cs.OS", "cs.AR"],
+    "TACO": ["cs.AR", "cs.PF", "cs.PL"],
+    "TOPLAS": ["cs.PL"],
+    "TOSEM": ["cs.SE"],
+    "TSE": ["cs.SE"],
+    "TC": ["cs.AR", "cs.PF"],
+    "TPDS": ["cs.DC", "cs.PF"],
+    "TKDE": ["cs.DB", "cs.LG"],
+    "TODS": ["cs.DB"],
+    "VLDBJ": ["cs.DB"],
+    "JSAC": ["cs.NI"],
+    "TON": ["cs.NI"],
 }
 
 WEIGHTS_CONF = {
     'relevance': 0.40,
     'popularity': 0.40,
     'quality': 0.20,
+}
+
+SYSTEM_A_CONFERENCES = {
+    "MICRO", "ASPLOS", "SC", "PPoPP", "OSDI", "SOSP", "NSDI", "EuroSys",
+    "ATC", "FAST", "HPCA", "ISCA", "ICS", "VLDB", "SIGMOD", "SoCC", "MLSys",
+}
+
+QUICK_PRIORITY_CONFERENCES = [
+    "ASPLOS", "OSDI", "SOSP", "NSDI", "EuroSys", "ATC", "FAST", "HPCA",
+    "ISCA", "MICRO", "SC", "PPoPP", "VLDB", "SIGMOD", "SoCC", "MLSys", "ICS",
+]
+
+SYSTEM_A_JOURNALS = {
+    "TOCS", "TOS", "TACO", "TOPLAS", "TOSEM", "TSE", "TC", "TPDS",
+    "TKDE", "TODS", "VLDBJ", "JSAC", "TON",
+}
+
+VENUE_PRIORITY_SCORE = {
+    "system_a_conference": 3.0,
+    "other_a_conference": 2.0,
+    "system_a_journal": 1.0,
+    "other": 0.0,
 }
 
 # 热门度：高影响力引用满分基准
@@ -179,7 +239,7 @@ def search_dblp_conference(venue_key: str, year: int, max_results: int = 1000, m
     Returns:
         论文列表，每篇包含 title, authors, dblp_url, year, conference
     """
-    venue_info = DBLP_VENUES.get(venue_key)
+    venue_info = DBLP_CONFERENCES.get(venue_key)
     if not venue_info:
         logger.warning("[DBLP] Unknown venue: %s", venue_key)
         return []
@@ -298,7 +358,64 @@ def search_dblp_conference(venue_key: str, year: int, max_results: int = 1000, m
     return []
 
 
-def search_all_conferences(year: int, venues: List[str], max_per_venue: int = 1000) -> List[Dict]:
+def search_dblp_journal(venue_key: str, year: int, max_results: int = 1000, max_retries: int = 3) -> List[Dict]:
+    venue_info = DBLP_JOURNALS.get(venue_key)
+    if not venue_info:
+        logger.warning("[DBLP] Unknown journal: %s", venue_key)
+        return []
+
+    params = {
+        "q": f'venue:{venue_info["venue_query"]} year:{year}',
+        "format": "json",
+        "h": min(max_results, 1000),
+        "f": 0,
+    }
+    url = f"{DBLP_API_URL}?{urllib.parse.urlencode(params)}"
+    logger.info("[DBLP] Searching journal %s %d", venue_key, year)
+
+    for attempt in range(max_retries):
+        try:
+            if HAS_REQUESTS:
+                resp = requests.get(url, headers={"User-Agent": "ConfPapers/1.0"}, timeout=60)
+                resp.raise_for_status()
+                data = resp.json()
+            else:
+                req = urllib.request.Request(url, headers={"User-Agent": "ConfPapers/1.0"})
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    data = json.loads(response.read().decode('utf-8'))
+
+            hits = data.get("result", {}).get("hits", {}).get("hit", [])
+            papers = []
+            for hit in hits:
+                info = hit.get("info", {})
+                title = info.get("title", "").rstrip(".")
+                if not title:
+                    continue
+                authors_info = info.get("authors", {}).get("author", [])
+                if isinstance(authors_info, dict):
+                    authors_info = [authors_info]
+                authors = [a.get("text", "") for a in authors_info if a.get("text")]
+                papers.append({
+                    "title": title,
+                    "authors": authors,
+                    "dblp_url": info.get("url", ""),
+                    "year": int(info.get("year", year)),
+                    "conference": venue_key,
+                    "venue": info.get("venue", venue_key),
+                    "doi": info.get("doi", ""),
+                    "source": "dblp",
+                    "venue_type": "journal",
+                })
+            logger.info("[DBLP] %s %d: found %d journal papers", venue_key, year, len(papers))
+            return papers
+        except Exception as e:
+            logger.warning("[DBLP] Journal error (attempt %d/%d): %s", attempt + 1, max_retries, e)
+            if attempt < max_retries - 1:
+                time.sleep((2 ** attempt) * 3)
+    return []
+
+
+def search_all_venues(year: int, venues: List[str], journals: List[str], max_per_venue: int = 1000) -> List[Dict]:
     """
     遍历所有会议搜索论文，合并去重
 
@@ -326,7 +443,21 @@ def search_all_conferences(year: int, venues: List[str], max_per_venue: int = 10
                 all_papers.append(p)
 
         logger.info("Total unique papers so far: %d", len(all_papers))
-        time.sleep(1)  # 会议间延迟
+        time.sleep(1)
+
+    for journal in journals:
+        logger.info("=" * 50)
+        logger.info("Searching journal %s %d...", journal, year)
+
+        papers = search_dblp_journal(journal, year, max_results=max_per_venue)
+        for p in papers:
+            title_norm = re.sub(r'[^a-z0-9\s]', '', p['title'].lower()).strip()
+            if title_norm not in seen_titles:
+                seen_titles.add(title_norm)
+                all_papers.append(p)
+
+        logger.info("Total unique papers so far: %d", len(all_papers))
+        time.sleep(1)
 
     return all_papers
 
@@ -343,7 +474,7 @@ def load_conf_papers_config(config_path: str) -> Dict:
         config_path: conf-papers.yaml 路径
 
     Returns:
-        {keywords: [...], excluded_keywords: [...], default_year, default_conferences, top_n}
+        {keywords: [...], excluded_keywords: [...], default_year, default_conferences, default_journals, top_n}
     """
     import yaml
 
@@ -359,6 +490,7 @@ def load_conf_papers_config(config_path: str) -> Dict:
         'excluded_keywords': cp.get('excluded_keywords', []),
         'default_year': cp.get('default_year'),
         'default_conferences': cp.get('default_conferences'),
+        'default_journals': cp.get('default_journals', []),
         'top_n': cp.get('top_n', 10),
     }
 
@@ -467,10 +599,11 @@ def enrich_with_semantic_scholar(papers: List[Dict], max_retries: int = 3) -> Li
     for i, paper in enumerate(papers):
         title = paper.get('title', '')
         if not title:
-            paper['abstract'] = None
+            paper['abstract'] = ''
             paper['citationCount'] = 0
             paper['influentialCitationCount'] = 0
             paper['s2_matched'] = False
+            paper['summary'] = ''
             continue
 
         if (i + 1) % 10 == 0:
@@ -507,7 +640,7 @@ def enrich_with_semantic_scholar(papers: List[Dict], max_retries: int = 3) -> Li
                         best_match = r
 
                 if best_match and best_sim >= 0.6:
-                    paper['abstract'] = best_match.get('abstract')
+                    paper['abstract'] = best_match.get('abstract') or ''
                     paper['citationCount'] = best_match.get('citationCount') or 0
                     paper['influentialCitationCount'] = best_match.get('influentialCitationCount') or 0
                     paper['s2_url'] = best_match.get('url', '')
@@ -550,16 +683,28 @@ def enrich_with_semantic_scholar(papers: List[Dict], max_retries: int = 3) -> Li
                     logger.debug("[S2] Failed to enrich: %s", title[:50])
 
         if not matched:
-            paper['abstract'] = None
+            paper['abstract'] = ''
             paper['citationCount'] = 0
             paper['influentialCitationCount'] = 0
             paper['s2_matched'] = False
+            paper['summary'] = ''
 
         # 关键：每次请求后等待 1 秒避免 429
         # S2 免费层约 1 req/sec
         time.sleep(1.0)
 
     logger.info("[S2] Enrichment complete: %d/%d papers enriched", enriched_count, total)
+    return papers
+
+
+def mark_unenriched_papers(papers: List[Dict]) -> List[Dict]:
+    """为未做 S2 enrich 的论文补默认字段，保持后续评分逻辑稳定。"""
+    for paper in papers:
+        paper.setdefault('abstract', '')
+        paper.setdefault('citationCount', 0)
+        paper.setdefault('influentialCitationCount', 0)
+        paper.setdefault('s2_matched', False)
+        paper.setdefault('summary', '')
     return papers
 
 
@@ -590,6 +735,20 @@ def calculate_popularity_score(paper: Dict) -> float:
         score = 0.0
 
     return score
+
+
+def classify_venue_priority(paper: Dict) -> str:
+    """Return a venue priority tier for ranking and tie-breaking."""
+    venue = paper.get('conference', '')
+    venue_type = paper.get('venue_type', 'conference')
+
+    if venue in SYSTEM_A_CONFERENCES:
+        return "system_a_conference"
+    if venue_type == "journal" and venue in SYSTEM_A_JOURNALS:
+        return "system_a_journal"
+    if venue in DBLP_CONFERENCES:
+        return "other_a_conference"
+    return "other"
 
 
 def filter_and_score_papers(papers: List[Dict], cp_config: Dict, top_n: int = 10) -> List[Dict]:
@@ -641,6 +800,8 @@ def filter_and_score_papers(papers: List[Dict], cp_config: Dict, top_n: int = 10
         # 计算质量
         summary = paper.get('summary', '') or paper.get('abstract', '') or ''
         quality = calculate_quality_score(summary)
+        venue_priority_label = classify_venue_priority(paper)
+        venue_priority_score = VENUE_PRIORITY_SCORE.get(venue_priority_label, 0.0)
 
         # 计算综合评分（三维度）
         normalized = {
@@ -657,13 +818,27 @@ def filter_and_score_papers(papers: List[Dict], cp_config: Dict, top_n: int = 10
             'quality': round(quality, 2),
             'recommendation': final_score,
         }
+        paper['venue_priority'] = {
+            'tier': venue_priority_label,
+            'score': venue_priority_score,
+        }
         paper['matched_domain'] = matched_domain
         paper['matched_keywords'] = matched_keywords
 
         scored_papers.append(paper)
 
     # 按推荐评分排序
-    scored_papers.sort(key=lambda x: x['scores']['recommendation'], reverse=True)
+    scored_papers.sort(
+        key=lambda x: (
+            x.get('venue_priority', {}).get('score', 0.0),
+            x['scores']['recommendation'],
+            x['scores']['relevance'],
+            x['scores']['popularity'],
+            x.get('conference', ''),
+            x.get('title', ''),
+        ),
+        reverse=True,
+    )
 
     logger.info("[Score] %d papers scored, returning top %d", len(scored_papers), top_n)
     return scored_papers[:top_n]
@@ -687,12 +862,22 @@ def main():
                         help='Conference year to search (default: from config)')
     parser.add_argument('--conferences', type=str, default=None,
                         help='Comma-separated conference names (default: from config)')
+    parser.add_argument('--journals', type=str, default=None,
+                        help='Comma-separated journal names (default: from config)')
     parser.add_argument('--top-n', type=int, default=None,
                         help='Number of top papers to return (default: from config)')
     parser.add_argument('--max-per-venue', type=int, default=1000,
                         help='Max papers to fetch per venue from DBLP')
     parser.add_argument('--skip-enrichment', action='store_true',
                         help='Skip Semantic Scholar enrichment (for debugging)')
+    parser.add_argument('--max-enrich', type=int, default=None,
+                        help='Only enrich top-K preliminarily filtered papers with Semantic Scholar')
+    parser.add_argument('--conference-priority-only', action='store_true',
+                        help='Search only conferences first, skip journals for quick validation')
+    parser.add_argument('--quick', action='store_true',
+                        help='Fast mode: smaller DBLP pull, conference-first, and no Semantic Scholar enrichment')
+    parser.add_argument('--very-quick', action='store_true',
+                        help='Very fast smoke test: smaller DBLP pull, conference-first, no enrichment, and smaller top-n')
 
     args = parser.parse_args()
 
@@ -720,6 +905,8 @@ def main():
 
     # 确定 top_n：命令行 > 配置 > 默认 10
     top_n = args.top_n or cp_config.get('top_n', 10)
+    if args.very_quick and args.top_n is None:
+        top_n = min(top_n, 10)
 
     # 确定要搜索的会议：命令行 > 配置 > 全部 7 个
     if args.conferences:
@@ -727,24 +914,59 @@ def main():
     elif cp_config.get('default_conferences'):
         venues = list(cp_config['default_conferences'])
     else:
-        venues = list(DBLP_VENUES.keys())
+        venues = list(DBLP_CONFERENCES.keys())
+
+    if args.journals:
+        journals = [v.strip() for v in args.journals.split(',')]
+    else:
+        journals = list(cp_config.get('default_journals', []))
+    if args.conference_priority_only:
+        journals = []
+
+    effective_max_per_venue = args.max_per_venue
+    effective_skip_enrichment = args.skip_enrichment
+    if args.quick:
+        journals = []
+        venues = [v for v in QUICK_PRIORITY_CONFERENCES if v in venues]
+        effective_max_per_venue = min(effective_max_per_venue, 120)
+        effective_skip_enrichment = True
+        logger.info("Quick mode enabled: %d priority conferences only, max_per_venue=%d, skip enrichment",
+                    len(venues), effective_max_per_venue)
+    if args.very_quick:
+        journals = []
+        venues = [v for v in QUICK_PRIORITY_CONFERENCES[:8] if v in venues]
+        effective_max_per_venue = min(effective_max_per_venue, 60)
+        effective_skip_enrichment = True
+        logger.info("Very quick mode enabled: %d priority conferences only, max_per_venue=%d, skip enrichment, compact top-n",
+                    len(venues), effective_max_per_venue)
 
     # 验证会议名（大小写不敏感匹配）
-    venue_name_map = {k.upper(): k for k in DBLP_VENUES}
+    venue_name_map = {k.upper(): k for k in DBLP_CONFERENCES}
     valid_venues = []
     for v in venues:
         canonical = venue_name_map.get(v.upper())
         if canonical:
             valid_venues.append(canonical)
         else:
-            logger.warning("Unknown conference: %s (available: %s)", v, ', '.join(DBLP_VENUES.keys()))
+            logger.warning("Unknown conference: %s (available: %s)", v, ', '.join(DBLP_CONFERENCES.keys()))
     venues = valid_venues
 
-    if not venues:
-        logger.error("No valid conferences specified")
+    journal_name_map = {k.upper(): k for k in DBLP_JOURNALS}
+    valid_journals = []
+    for j in journals:
+        canonical = journal_name_map.get(j.upper())
+        if canonical:
+            valid_journals.append(canonical)
+        else:
+            logger.warning("Unknown journal: %s (available: %s)", j, ', '.join(DBLP_JOURNALS.keys()))
+    journals = valid_journals
+
+    if not venues and not journals:
+        logger.error("No valid venues specified")
         return 1
 
     logger.info("Conferences: %s", ', '.join(venues))
+    logger.info("Journals: %s", ', '.join(journals))
     logger.info("Year: %d", year)
 
     # ========== 第一步：DBLP 搜索 ==========
@@ -752,7 +974,7 @@ def main():
     logger.info("Step 1: Searching papers from DBLP")
     logger.info("=" * 70)
 
-    all_papers = search_all_conferences(year, venues, max_per_venue=args.max_per_venue)
+    all_papers = search_all_venues(year, venues, journals, max_per_venue=effective_max_per_venue)
     total_found = len(all_papers)
     logger.info("Total papers found from DBLP: %d", total_found)
 
@@ -762,6 +984,7 @@ def main():
         output = {
             "year": year,
             "conferences_searched": venues,
+            "journals_searched": journals,
             "total_found": 0,
             "total_enriched": 0,
             "total_unique": 0,
@@ -769,7 +992,7 @@ def main():
         }
         with open(args.output, 'w', encoding='utf-8') as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        emit_json_output(output)
         return 0
 
     # ========== 第二步：轻量关键词过滤 ==========
@@ -785,6 +1008,7 @@ def main():
         output = {
             "year": year,
             "conferences_searched": venues,
+            "journals_searched": journals,
             "total_found": total_found,
             "total_enriched": 0,
             "total_unique": 0,
@@ -792,20 +1016,33 @@ def main():
         }
         with open(args.output, 'w', encoding='utf-8') as f:
             json.dump(output, f, ensure_ascii=False, indent=2)
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+        emit_json_output(output)
         return 0
 
     # ========== 第三步：Semantic Scholar 补充 ==========
     total_enriched = 0
-    if not args.skip_enrichment:
+    if not effective_skip_enrichment:
         logger.info("=" * 70)
-        logger.info("Step 3: Enriching with Semantic Scholar (%d papers)", len(filtered_papers))
+        enrich_candidates = filtered_papers
+        skipped_enrich_count = 0
+        if args.max_enrich is not None and args.max_enrich >= 0:
+            enrich_candidates = filtered_papers[:args.max_enrich]
+            skipped_enrich_count = max(0, len(filtered_papers) - len(enrich_candidates))
+            logger.info("Step 3: Enriching with Semantic Scholar only top %d/%d preliminarily filtered papers",
+                        len(enrich_candidates), len(filtered_papers))
+        else:
+            logger.info("Step 3: Enriching with Semantic Scholar (%d papers)", len(filtered_papers))
         logger.info("=" * 70)
 
-        filtered_papers = enrich_with_semantic_scholar(filtered_papers)
+        enriched_subset = enrich_with_semantic_scholar(enrich_candidates)
+        remaining_subset = mark_unenriched_papers(filtered_papers[len(enrich_candidates):]) if skipped_enrich_count else []
+        filtered_papers = enriched_subset + remaining_subset
         total_enriched = sum(1 for p in filtered_papers if p.get('s2_matched'))
+        if skipped_enrich_count:
+            logger.info("[S2] Skipped enrichment for %d lower-priority preliminarily filtered papers", skipped_enrich_count)
     else:
-        logger.info("Skipping Semantic Scholar enrichment (--skip-enrichment)")
+        logger.info("Skipping Semantic Scholar enrichment")
+        filtered_papers = mark_unenriched_papers(filtered_papers)
 
     # ========== 第四步：评分排序 ==========
     logger.info("=" * 70)
@@ -820,6 +1057,7 @@ def main():
         p.pop('s2_matched', None)
         p.pop('s2_title_similarity', None)
         p.pop('categories', None)
+        p.pop('venue_priority', None)
         p.pop('summary', None)  # 保留 abstract，去掉重复的 summary
         # 为每篇论文补充 note_filename，与 generate_note.py 的文件名规则保持一致
         # 这样 conf-papers 生成的 wikilink 可以直接使用此字段，无需自行推断
@@ -829,6 +1067,7 @@ def main():
     output = {
         "year": year,
         "conferences_searched": venues,
+        "journals_searched": journals,
         "total_found": total_found,
         "total_filtered": total_filtered,
         "total_enriched": total_enriched,
@@ -846,7 +1085,7 @@ def main():
                      i, p.get('conference', '?'), p.get('title', 'N/A')[:50],
                      p['scores']['recommendation'], cit)
 
-    print(json.dumps(output, ensure_ascii=False, indent=2, default=str))
+    emit_json_output(output)
     return 0
 
 

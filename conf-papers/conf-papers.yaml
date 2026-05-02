@@ -81,10 +81,13 @@ excluded_keywords:
 
 default_year: 2026
 
-# Broad A-level venue set. Useful LLM-serving/state-optimization ideas can
-# appear in systems venues, AI/ML/NLP venues, data venues, and IR/web venues.
-# Note: DBLP coverage differs by venue/year.
+# Default search scope:
+# 1. Include all CCF A-class conferences.
+# 2. Include system-related CCF A-class journals.
+# 3. Preserve a few extra high-signal venues that may inspire systems work.
+# Note: DBLP coverage differs by venue/year/journal naming.
 default_conferences:
+  # Architecture / systems / parallel / storage / software / database / networking
   - "MICRO"
   - "ASPLOS"
   - "SC"
@@ -102,6 +105,7 @@ default_conferences:
   - "SIGMOD"
   - "SoCC"
   - "MLSys"
+  # Full CCF A conference coverage across non-systems directions
   - "NeurIPS"
   - "ICML"
   - "ICLR"
@@ -122,5 +126,21 @@ default_conferences:
   - "ICCV"
   - "ECCV"
   - "MICCAI"
+
+default_journals:
+  # System-related CCF A journals
+  - "TOCS"
+  - "TOS"
+  - "TACO"
+  - "TOPLAS"
+  - "TOSEM"
+  - "TSE"
+  - "TC"
+  - "TPDS"
+  - "TODS"
+  - "VLDBJ"
+  - "TKDE"
+  - "JSAC"
+  - "TON"
 
 top_n: 10

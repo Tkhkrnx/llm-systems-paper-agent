@@ -613,7 +613,7 @@ def main() -> int:
         "image_dirs": [str(path) for path in collect_image_dirs(asset_dir)],
         "image_aliases": image_aliases,
         "updated": datetime.now().strftime("%Y-%m-%d"),
-        "next_skill": "paper-analyze",
+        "next_skill": "paper-translate" if raw_md else "paper-analyze",
         "note_state": "analyzed" if existing_note else "needs_analysis",
     }
     write_manifest(manifest_path, manifest)
@@ -625,7 +625,7 @@ def main() -> int:
     status = "assets_ingested_note_exists" if existing_note else "assets_ingested_needs_analysis"
     print(json.dumps({
         "status": status,
-        "suggested_next_skill": "paper-analyze",
+        "suggested_next_skill": manifest["next_skill"],
         "note": str(note_path),
         "assets_index": str(assets_index),
         "manifest": str(manifest_path),
