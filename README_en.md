@@ -16,3 +16,11 @@ Obsidian workflow foundation. This repository customizes that idea for:
 
 See [README.md](README.md) for the maintained Chinese documentation.
 See [NOTICE.md](NOTICE.md) for attribution details.
+
+## paper-ingest updates
+
+- Better DBLP / DOI / OpenReview / arXiv source resolution
+- Safer blocked-source fallback handling
+- Download retry support for unstable fetches
+- Shorter generated asset slugs to reduce Windows path-length failures
+- Improved support for large-batch ingest workflows

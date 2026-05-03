@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import requests
 import yaml
 
 
@@ -25,16 +26,29 @@ ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 
 
+def urlopen_no_proxy(request_or_url, timeout=60):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(request_or_url, timeout=timeout)
+
+
+def requests_session_no_proxy() -> requests.Session:
+    session = requests.Session()
+    session.trust_env = False
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+    return session
+
+
 def safe_name(text: str, fallback: str = "paper") -> str:
     text = (text or fallback).strip()
     text = re.sub(r'[ /\\:*?"<>|]+', "_", text)
     text = re.sub(r"_+", "_", text).strip("._")
-    return text[:180] or fallback
+    return text[:80] or fallback
 
 
 def slugify(text: str, fallback: str = "paper") -> str:
     value = safe_name(text, fallback=fallback).replace("_", "-").lower()
     value = re.sub(r"-+", "-", value).strip("-")
+    value = value[:60].strip("-")
     return value or fallback
 
 
@@ -69,31 +83,245 @@ def read_yaml_config(path: Path) -> dict:
 
 def fetch_arxiv_metadata(arxiv_id: str) -> dict:
     url = f"https://export.arxiv.org/api/query?id_list={urllib.parse.quote(arxiv_id)}"
-    with urllib.request.urlopen(url, timeout=60) as resp:
-        xml = resp.read().decode("utf-8")
+    try:
+        with urlopen_no_proxy(url, timeout=60) as resp:
+            xml = resp.read().decode("utf-8")
+        root = ET.fromstring(xml)
+        entry = root.find("atom:entry", ARXIV_NS)
+        if entry is None:
+            raise ValueError("Empty arXiv metadata entry")
+        title = (entry.findtext("atom:title", default="", namespaces=ARXIV_NS) or "").strip()
+        summary = (entry.findtext("atom:summary", default="", namespaces=ARXIV_NS) or "").strip()
+        published = entry.findtext("atom:published", default="", namespaces=ARXIV_NS) or ""
+        authors = []
+        for author in entry.findall("atom:author", ARXIV_NS):
+            name = author.findtext("atom:name", default="", namespaces=ARXIV_NS)
+            if name:
+                authors.append(name)
+        categories = [c.get("term") for c in entry.findall("atom:category", ARXIV_NS) if c.get("term")]
+        return {
+            "paper_id": arxiv_id,
+            "title": re.sub(r"\s+", " ", title),
+            "authors": ", ".join(authors),
+            "abstract": re.sub(r"\s+", " ", summary),
+            "published": published[:10],
+            "categories": categories,
+            "source_url": f"https://arxiv.org/abs/{arxiv_id}",
+            "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
+        }
+    except Exception as exc:
+        return {
+            "paper_id": arxiv_id,
+            "title": arxiv_id,
+            "authors": "TBD",
+            "abstract": "TBD",
+            "published": "TBD",
+            "categories": [],
+            "source_url": f"https://arxiv.org/abs/{arxiv_id}",
+            "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
+            "_fetch_error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def fetch_dblp_metadata(dblp_url: str) -> dict:
+    """Fetch metadata from a DBLP record page via its XML endpoint."""
+    parsed = urllib.parse.urlparse(dblp_url.strip())
+    rec_path = parsed.path.rstrip("/")
+    xml_url = urllib.parse.urlunparse(parsed._replace(path=rec_path + ".xml", query="", fragment=""))
+    xml = None
+    try:
+        with urlopen_no_proxy(urllib.request.Request(xml_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=60) as resp:
+            xml = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        xml = None
+    if not xml:
+        try:
+            with urlopen_no_proxy(urllib.request.Request(dblp_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=60) as resp:
+                html = resp.read().decode("utf-8", errors="ignore")
+            m_title = re.search(r"<title>dblp:\s*(.+?)</title>", html, re.I | re.S)
+            title = clean_html_text(m_title.group(1)) if m_title else rec_path.rsplit("/", 1)[-1]
+            return {
+                "paper_id": rec_path.rsplit("/", 1)[-1],
+                "title": title.rstrip("."),
+                "authors": "TBD",
+                "abstract": "TBD",
+                "published": "TBD",
+                "categories": [],
+                "venue": "TBD",
+                "source_url": dblp_url,
+                "pdf_url": discover_pdf_from_dblp_html(dblp_url) or dblp_url,
+                "dblp_xml_url": xml_url,
+                "ee_links": [],
+            }
+        except Exception:
+            return {}
     root = ET.fromstring(xml)
-    entry = root.find("atom:entry", ARXIV_NS)
+    entry = None
+    for child in root:
+        if child.tag.endswith("inproceedings") or child.tag.endswith("article") or child.tag.endswith("incollection"):
+            entry = child
+            break
     if entry is None:
         return {}
-    title = (entry.findtext("atom:title", default="", namespaces=ARXIV_NS) or "").strip()
-    summary = (entry.findtext("atom:summary", default="", namespaces=ARXIV_NS) or "").strip()
-    published = entry.findtext("atom:published", default="", namespaces=ARXIV_NS) or ""
-    authors = []
-    for author in entry.findall("atom:author", ARXIV_NS):
-        name = author.findtext("atom:name", default="", namespaces=ARXIV_NS)
-        if name:
-            authors.append(name)
-    categories = [c.get("term") for c in entry.findall("atom:category", ARXIV_NS) if c.get("term")]
+    title = (entry.findtext("title") or "").strip().rstrip(".")
+    authors = [a.text.strip() for a in entry.findall("author") if a.text and a.text.strip()]
+    year = (entry.findtext("year") or "").strip()
+    venue = (entry.findtext("booktitle") or entry.findtext("journal") or "").strip()
+    paper_id = entry.get("key") or rec_path.rsplit("/", 1)[-1]
+    ee_links = []
+    for ee in entry.findall("ee"):
+        link = (ee.text or "").strip()
+        if link:
+            ee_links.append(link)
+    source_url = dblp_url
+    pdf_url = resolve_pdf_url_from_links(ee_links) or discover_pdf_from_dblp_html(dblp_url)
     return {
-        "paper_id": arxiv_id,
-        "title": re.sub(r"\s+", " ", title),
+        "paper_id": paper_id.split("/")[-1],
+        "title": title,
         "authors": ", ".join(authors),
-        "abstract": re.sub(r"\s+", " ", summary),
-        "published": published[:10],
-        "categories": categories,
-        "source_url": f"https://arxiv.org/abs/{arxiv_id}",
-        "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
+        "abstract": "TBD",
+        "published": f"{year}-01-01" if year else "TBD",
+        "categories": [],
+        "venue": venue or "TBD",
+        "source_url": source_url,
+        "pdf_url": pdf_url or source_url,
+        "dblp_xml_url": xml_url,
+        "ee_links": ee_links,
     }
+
+
+def clean_html_text(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text or "")
+    text = html_unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def html_unescape(text: str) -> str:
+    import html
+    return html.unescape(text)
+
+
+def resolve_pdf_url_from_links(links: List[str]) -> Optional[str]:
+    for link in links:
+        lower = link.lower()
+        if lower.endswith(".pdf"):
+            return link
+        if "arxiv.org/abs/" in lower:
+            arxiv_id = lower.rsplit("/abs/", 1)[-1].split("v")[0]
+            return f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+        if "openreview.net/forum?id=" in lower:
+            forum_id = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("id", [""])[0]
+            if forum_id:
+                return f"https://openreview.net/pdf?id={urllib.parse.quote(forum_id)}"
+        if "proceedings.mlsys.org/paper_files/" in lower and "abstract-conference.html" in lower:
+            candidate = link.replace("-Abstract-Conference.html", "-Paper-Conference.pdf")
+            if candidate.lower().endswith(".pdf"):
+                return candidate
+        if "doi.org/" in lower:
+            pdf = discover_pdf_from_page(link)
+            if pdf:
+                return pdf
+    for link in links:
+        lower = link.lower()
+        if lower.startswith("https://") or lower.startswith("http://"):
+            try:
+                req = urllib.request.Request(link, headers={"User-Agent": "Mozilla/5.0"})
+                with urlopen_no_proxy(req, timeout=30) as resp:
+                    ctype = (resp.headers.get("Content-Type") or "").lower()
+                    if "pdf" in ctype:
+                        return link
+                    html = resp.read().decode("utf-8", errors="ignore")
+                    m = re.search(r'href=[\"\\\']([^\"\\\']+\\.pdf(?:\\?[^\"\\\']*)?)[\"\\\']', html, re.I)
+                    if m:
+                        pdf = urllib.parse.urljoin(link, m.group(1))
+                        return pdf
+            except Exception:
+                continue
+    return None
+
+
+def extract_pdf_from_html(html: str, base_url: str) -> Optional[str]:
+    if not html:
+        return None
+    patterns = [
+        r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+\.pdf[^"\']*)["\']',
+        r'citation_pdf_url["\']\s+content=["\']([^"\']+\.pdf[^"\']*)["\']',
+        r'href=[\"\']([^\"\']+\.pdf(?:\?[^\"\']*)?)[\"\']',
+        r'contentUrl["\']\s*:\s*["\']([^"\']+\.pdf[^"\']*)["\']',
+        r'(?:/)?pdf\?id=([^\"\']+)',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, html, re.I)
+        if m:
+            hit = m.group(1)
+            if pattern.endswith(r'(?:/)?pdf\?id=([^\"\']+)'):
+                return urllib.parse.urljoin(base_url, f"/pdf?id={hit}")
+            return urllib.parse.urljoin(base_url, hit)
+    return None
+
+
+def discover_pdf_from_page(url: str) -> Optional[str]:
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen_no_proxy(req, timeout=45) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    pdf = extract_pdf_from_html(html, url)
+    if pdf:
+        return pdf
+    # fall back to first likely external edition link
+    for pattern in [
+        r'href=[\"\']([^\"\']*openreview\.net/forum\?id=[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*openreview\.net[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*doi\.org/[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*usenix\.org/[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*arxiv\.org/abs/[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*proceedings\.mlsys\.org/[^\"\']+)[\"\']',
+    ]:
+        m = re.search(pattern, html, re.I)
+        if m:
+            ext = m.group(1)
+            if "openreview.net/forum?id=" in ext:
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(ext).query).get("id", [""])[0]
+                if q:
+                    return f"https://openreview.net/pdf?id={urllib.parse.quote(q)}"
+            pdf = discover_pdf_from_page(ext)
+            if pdf:
+                return pdf
+    return None
+
+
+def discover_pdf_from_dblp_html(dblp_url: str) -> Optional[str]:
+    try:
+        req = urllib.request.Request(dblp_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen_no_proxy(req, timeout=30) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    pdf = extract_pdf_from_html(html, dblp_url)
+    if pdf:
+        return pdf
+    pdf_candidates = re.findall(r'href=[\"\']([^\"\']+\.pdf(?:\?[^\"\']*)?)[\"\']', html, re.I)
+    for candidate in pdf_candidates:
+        return urllib.parse.urljoin(dblp_url, candidate)
+    for pattern in [
+        r'href=[\"\']([^\"\']*openreview\.net/forum\?id=[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*openreview\.net[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*doi\.org/[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*arxiv\.org/abs/[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*proceedings\.mlsys\.org/[^\"\']+)[\"\']',
+        r'href=[\"\']([^\"\']*usenix\.org/[^\"\']+)[\"\']',
+    ]:
+        m = re.search(pattern, html, re.I)
+        if m:
+            ext = m.group(1)
+            if "openreview.net/forum?id=" in ext:
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(ext).query).get("id", [""])[0]
+                if q:
+                    return f"https://openreview.net/pdf?id={urllib.parse.quote(q)}"
+            return discover_pdf_from_page(ext) or ext
+    return None
 
 
 def is_missing(value: Optional[str]) -> bool:
@@ -105,9 +333,22 @@ def is_missing(value: Optional[str]) -> bool:
 
 
 def download_file(url: str, output: Path) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": "llm-systems-paper-agent/1.0"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        output.write_bytes(resp.read())
+    headers = {"User-Agent": "Mozilla/5.0"}
+    last_exc = None
+    for _ in range(4):
+        try:
+            session = requests_session_no_proxy()
+            with session.get(url, stream=True, timeout=120, allow_redirects=True) as resp:
+                resp.raise_for_status()
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with output.open("wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1024 * 64):
+                        if chunk:
+                            fh.write(chunk)
+                return
+        except Exception as exc:
+            last_exc = exc
+    raise last_exc
 
 
 def resolve_input(input_value: str, title: Optional[str], authors: Optional[str]) -> Tuple[dict, Optional[Path], Optional[str]]:
@@ -137,9 +378,34 @@ def resolve_input(input_value: str, title: Optional[str], authors: Optional[str]
         metadata["input_type"] = "arxiv"
         return metadata, None, metadata.get("pdf_url")
 
+    if "dblp.org/rec/" in value:
+        metadata = fetch_dblp_metadata(value)
+        if title:
+            metadata["title"] = title
+        if authors:
+            metadata["authors"] = authors
+        metadata["input_type"] = "dblp"
+        metadata["pdf_url"] = metadata.get("pdf_url") or discover_pdf_from_dblp_html(value) or discover_pdf_from_page(value) or value
+        return metadata, None, metadata.get("pdf_url")
+
     if re.match(r"https?://", value):
         parsed = urllib.parse.urlparse(value)
         guessed = Path(parsed.path).stem or "paper"
+        pdf_guess = discover_pdf_from_page(value) or discover_pdf_from_dblp_html(value) or value
+        if not isinstance(pdf_guess, str) or not pdf_guess.strip():
+            pdf_guess = value
+        if value.lower().endswith(".pdf") or "pdf" in parsed.path.lower():
+            return {
+                "paper_id": guessed,
+                "title": title or guessed,
+                "authors": authors or "TBD",
+                "abstract": "TBD",
+                "published": "TBD",
+            "source_url": value,
+            "pdf_url": pdf_guess,
+            "categories": [],
+            "input_type": "pdf_url",
+        }, None, value
         return {
             "paper_id": guessed,
             "title": title or guessed,
@@ -147,10 +413,10 @@ def resolve_input(input_value: str, title: Optional[str], authors: Optional[str]
             "abstract": "TBD",
             "published": "TBD",
             "source_url": value,
-            "pdf_url": value,
+            "pdf_url": pdf_guess,
             "categories": [],
-            "input_type": "pdf_url",
-        }, None, value
+            "input_type": "html_url",
+        }, None, pdf_guess
 
     raise SystemExit(f"Unsupported input: {input_value}")
 
@@ -528,6 +794,7 @@ def main() -> int:
     vault = Path(args.vault).resolve()
     config = read_yaml_config(Path(args.config))
     metadata, local_pdf, pdf_url = resolve_input(args.input, args.title, args.authors)
+    pdf_url = pdf_url or metadata.get("pdf_url") or metadata.get("source_url")
     metadata["requested_domain"] = args.domain
     title_seed = metadata.get("title") or metadata.get("paper_id") or "paper"
     asset_slug = slugify(title_seed, fallback="paper")
@@ -539,6 +806,8 @@ def main() -> int:
         if local_pdf.resolve() != pdf_path.resolve():
             shutil.copy2(local_pdf, pdf_path)
     else:
+        if not pdf_url:
+            raise SystemExit(f"Could not resolve PDF URL for input: {args.input}")
         download_file(pdf_url, pdf_path)
 
     mineru_status = "skipped"
