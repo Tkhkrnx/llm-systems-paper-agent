@@ -1,142 +1,34 @@
 # LLM Systems Paper Agent
 
-面向大模型推理系统、分层状态优化与协同优化的论文搜索、入库、分析和 Obsidian 笔记工作流。
+面向大模型推理系统、分层状态优化与协同优化的论文搜索、入库、翻译、分析、审稿与 Obsidian 工作流。
 
-本仓库是在 [@juliye2025/evil-read-arxiv](https://github.com/juliye2025/evil-read-arxiv) 的基础上进行的个人研究方向适配与二次改造。原项目提供了论文推荐、阅读和 Obsidian 整理工作流的基础思路；本仓库当前目标不再是通用论文推荐，而是围绕以下研究方向组织论文。详细来源说明见 [NOTICE.md](NOTICE.md)。
+本仓库是在 [@juliye2025/evil-read-arxiv](https://github.com/juliye2025/evil-read-arxiv) 的基础上进行的个性化改进与研究方向适配，重点服务于以下方向：
 
-- LLM inference / LLM serving；
-- KV cache、prefix/prompt/context cache、long-context serving；
-- stateful systems、distributed state、state placement、state migration；
-- stream processing、distributed systems、runtime optimization；
-- heterogeneous hardware、GPU、CXL、RDMA、memory hierarchy；
-- RAG、continual learning、agent memory；
-- 跨模型、runtime、系统、硬件层的协同优化。
+- LLM inference / LLM serving
+- KV cache / prompt cache / context state management
+- stateful systems / distributed state / runtime optimization
+- heterogeneous hardware / memory hierarchy / GPU serving
+- RAG / continual systems / retrieval state
+- 跨模型、跨运行时、跨硬件的协同优化
 
-## Skill 组成
+更详细的来源说明见 [NOTICE.md](NOTICE.md)。
 
-### `paper-search`
+## 这套 Agent 现在做什么
 
-基础查询/查重 skill。其他 skill 在创建新笔记或下载论文前应先调用它。
+这套 skill 不是单纯“推荐论文”，而是把论文工作流拆成几个明确步骤：
 
-搜索范围包括：
+1. 搜索与查重：`paper-search`
+2. 稳定下载 PDF 并入库：`paper-ingest`
+3. 生成中文版 MinerU Markdown：`paper-translate`
+4. 生成正式分析笔记：`paper-analyze`
+5. 生成严格审稿意见：`paper-review`
+6. 每日推荐与批量会刊搜索：`start-my-day`、`conf-papers`
 
-- `20_Research/Papers/**/*.md`
-- `20_Research/Papers/_assets/**/*.md`
-- MinerU 原始 Markdown；
-- PDF 资产；
-- 每日推荐笔记。
+## 目录结构
 
-### `paper-ingest`
-
-论文资产入库 skill。输入 arXiv ID、PDF URL 或本地 PDF，产出：
-
-- PDF；
-- MinerU Markdown；
-- 图片/媒体资产；
-- `assets.md`；
-- `ingest_manifest.json`。
-
-它不生成正式论文分析笔记；正式笔记统一由 `paper-analyze` 生成或更新。
-
-### `paper-analyze`
-
-论文深度分析 skill。读取 `paper-ingest` 产出的 PDF、MinerU Markdown、图片、`assets.md` 和 `ingest_manifest.json`，生成或补全正式论文笔记：
-
-- 导师七问；
-- 综述五字段；
-- 方法整体机制总结；
-- 分析框架图；
-- 实验设置和关键结果；
-- 人工阅读重点；
-- 与已有工作的关系；
-- 对用户研究方向的价值；
-- 局限性和 open gap。
-
-当前 `paper-analyze` 的默认写法已经不是“摘要式摘录”，而是面向“了解大模型基础概念、但记得不牢且系统联系不够紧的研究生”来讲清楚。它有几个明确约束：
-
-- 不再单独生成“先修概念 / 背景铺垫”词典式小节；
-- 基础知识、背景知识和术语解释会直接织进问题、方法、实验、局限等正文部分；
-- 方法部分会按“要解决什么问题 -> 原文具体怎么做 -> 为什么这样做可行 -> 工程收益和代价是什么”的层次展开；
-- 实验部分会覆盖主要图表，而不是只挑几张图解释；
-- 局限、open gap、与已有工作的边界会尽量按接近严格审稿的证据标准来写，但整篇笔记仍保持教学式讲解口吻。
-
-### `paper-review`
-
-严格审稿 skill。读取 `paper-ingest` 与 `paper-analyze` 的产物，结合原文 PDF、MinerU Markdown、正式分析笔记与审稿模板，生成一份偏体系结构 / 系统顶会风格的中文审稿意见，包括：
-
-- Summary and High Level Discussion
-- Strengths
-- Weaknesses
-- Comments for Rebuttal
-- Detailed Comments for Authors
-- Scored Review Questions
-- Reproducibility
-- Confidential Comments to the Program Committee
-
-当前 `paper-review` 已经移除了单独的 `Multi-Angle Technical Assessment` checklist section。方法结构、baseline 公平性、系统代价、artifact 生命周期、deployment realism、claim-over-evidence、reproducibility 等判断会直接融入原有 review 结构里。
-
-### `paper-translate`
-
-论文 Markdown 翻译 skill。读取 `paper-ingest` 生成的 MinerU 英文 Markdown，生成一份严谨、准确、学术化的中文版 Markdown，并把翻译结果路径写回 `ingest_manifest.json`。
-
-### `extract-paper-images`
-
-图片补全 skill。优先复用 MinerU 图片，其次 arXiv 源码图，最后从 PDF 提取。
-
-### `start-my-day`
-
-每日推荐编排 skill。它不重复实现入库和分析，而是按顺序调用：
-
-1. `paper-search`
-2. arXiv/Semantic Scholar 搜索脚本
-3. `paper-ingest`
-4. `paper-translate`
-5. `paper-analyze`
-6. `paper-review`
-7. 必要时 `extract-paper-images`
-
-默认每日推荐 3 篇重点论文。
-
-### `conf-papers`
-
-顶会论文搜索编排 skill。它负责会议论文发现与推荐，后续入库和分析交给：
-
-- `paper-search`
-- `paper-ingest`
-- `paper-translate`
-- `paper-analyze`
-- `paper-review`
-- `extract-paper-images`
-
-## 会议范围
-
-系统、体系结构、HPC、并行、数据库：
-
-`MICRO, ASPLOS, SC, PPoPP, OSDI, SOSP, NSDI, EuroSys, USENIX ATC, FAST, HPCA, ISCA, ICS, VLDB, SIGMOD, SoCC, MLSys`
-
-AI/ML/NLP/IR/Web/Data Mining/CV：
-
-`NeurIPS, ICML, ICLR, AAAI, IJCAI, ACL, EMNLP, NAACL, KDD, WWW, SIGIR, CIKM, RecSys, UAI, AISTATS, COLT, CVPR, ICCV, ECCV, MICCAI`
-
-## 数据源
-
-自动搜索会综合使用：
-
-- arXiv API；
-- Semantic Scholar API；
-- DBLP；
-- 用户给定 PDF URL；
-- 用户给定本地 PDF。
-
-没有任何单一数据源能保证覆盖所有已发表和预印本论文，因此发现遗漏时应直接使用 `paper-ingest` 通过 PDF URL 或本地 PDF 入库。
-
-## Obsidian 目录约定
-
-默认 vault：
+默认 Obsidian vault：
 
 `C:/Users/peng/Documents/PHR/obsidian_phr`
-
-目录结构：
 
 ```text
 obsidian_phr/
@@ -150,85 +42,143 @@ obsidian_phr/
       RAG Memory and Continual Systems/
   99_System/
     Config/
-      research_interests.yaml
+    Guides/
 ```
 
-`99_System` 用来放 agent 和脚本配置，不是论文正文目录。
+`99_System` 用来放配置、说明文档和工作流指南，不放正式论文正文笔记。
+
+## Skills
+
+### `paper-search`
+
+搜索与查重。先检查：
+
+- 正式论文笔记
+- `_assets` 下的 PDF / MinerU Markdown / assets 索引
+- 每日推荐笔记
+
+### `paper-ingest`
+
+论文资产入库。负责：
+
+- 稳定解析 PDF 来源
+- 多源回退下载 PDF
+- 校验下载结果是不是“真 PDF”
+- 调用 MinerU 生成 Markdown 和图片
+- 生成 `assets.md`
+- 生成 `ingest_manifest.json`
+
+### `paper-translate`
+
+把英文 MinerU Markdown 翻译成严谨、学术化、偏直译但流畅的中文版 Markdown。
+
+注意：分析和审稿仍以英文原始 Markdown 为主证据；中文 Markdown 是辅助阅读材料。
+
+### `paper-analyze`
+
+基于 PDF、MinerU Markdown、图片、assets 索引和 manifest 生成正式 Obsidian 笔记。
+
+当前版本的重点不是“摘录”，而是把论文讲清楚，尤其适合“知道大模型基础概念、但理解还不牢”的读者。
+
+### `paper-review`
+
+基于原文 PDF、英文 MinerU Markdown、正式分析笔记和审稿模板，生成偏体系结构 / 系统顶会风格的严格中文审稿意见。
+
+### `start-my-day`
+
+每日推荐 3 篇论文，并串联：
+
+- `paper-search`
+- `paper-ingest`
+- `paper-translate`
+- `paper-analyze`
+- 必要时 `paper-review`
+
+### `conf-papers`
+
+面向 CCF A 类及高水平系统 / AI / ML / NLP / IR / 数据库 / 并行 / 体系结构 venue 做会议论文检索，再串联入库与分析。
+
+## `paper-ingest` 这次重点优化了什么
+
+这次最核心的改动，是把“PDF 下载”从“MinerU 后处理”里拆出来，避免用户把所有失败都感知成“论文下不来”。
+
+### 新的 ingest 原则
+
+1. PDF 下载成功与 MinerU 成功分开记录  
+2. 下载后必须做 PDF 校验，不只看 HTTP 200  
+3. 支持多源回退：arXiv / OpenReview / venue / DOI / DBLP 派生链接  
+4. 每次尝试都写进 manifest，方便判断失败到底发生在哪一环  
+
+### Manifest 里新增的关键字段
+
+- `pdf_download_status`
+- `pdf_download_record`
+- `pdf_download_attempts`
+- `pdf_validation`
+- `mineru_status`
+- `mineru_attempts`
+
+这样后面看到失败时，可以明确区分：
+
+- 没解析到 PDF
+- PDF 下载失败
+- 下载到的不是 PDF
+- PDF 正常，但 MinerU 失败
+
+## 会议范围
+
+系统、体系结构、高性能、并行、数据库：
+
+`MICRO, ASPLOS, SC, PPoPP, OSDI, SOSP, NSDI, EuroSys, USENIX ATC, FAST, HPCA, ISCA, ICS, VLDB, SIGMOD, SoCC, MLSys`
+
+AI / ML / NLP / IR / Web / Data Mining / CV：
+
+`NeurIPS, ICML, ICLR, AAAI, IJCAI, ACL, EMNLP, NAACL, KDD, WWW, SIGIR, CIKM, RecSys, UAI, AISTATS, COLT, CVPR, ICCV, ECCV, MICCAI`
 
 ## MinerU
 
-本工作流依赖 MinerU 将 PDF 转成 Markdown 和图片。
+当前工作流优先使用本机已安装的 `mineru` 命令；如有需要，也支持通过配置文件里的 `mineru_root` 回退到本地源码目录。
 
-当前本机已按源码 editable 方式安装 MinerU：
-
-```powershell
-python -m pip install -e ".[all]" -i https://mirrors.aliyun.com/pypi/simple
-mineru --version
-```
-
-PDF 转 Markdown 的核心命令：
+核心命令：
 
 ```powershell
 mineru -p <pdf> -o <output> -b pipeline
 ```
 
-`paper-ingest` 会自动调用 MinerU。
-
 ## 快速使用
 
-在 Obsidian 的 Claudian/Claude Code 对话里使用自然语言：
-
 ```text
-使用 start-my-day，今天给我推荐3篇 LLM serving 和状态优化方向的论文，并保存 PDF、MinerU Markdown、图片，然后生成正式分析笔记。
+使用 start-my-day，今天给我推荐 3 篇和 LLM serving、KV cache、state management 相关的论文，并保存 PDF、MinerU Markdown、中文 Markdown 和正式分析笔记。
 ```
 
 ```text
-使用 conf-papers，搜索 2025 年 MICRO、ASPLOS、SC、PPoPP、NeurIPS、ICML、ICLR 中与 KV cache 和 LLM serving 相关的论文。
+使用 conf-papers，搜索 2024 到 2026 年 MICRO、ASPLOS、OSDI、SOSP、NeurIPS、ICML 里和 LLM inference systems 相关的论文，并把最值得读的几篇入库分析。
 ```
 
 ```text
-使用 paper-ingest，导入 arXiv:2402.12345，领域设为 LLM Inference Systems。
+使用 paper-ingest，把 arXiv:2402.12345 保存到 Obsidian。
 ```
 
 ```text
-使用 paper-translate，把这篇论文的 MinerU Markdown 转成中文学术版 Markdown。
+使用 paper-analyze，按现在的高质量笔记标准分析这篇论文，重点把方法机制和实验结论讲清楚。
 ```
 
 ```text
-使用 paper-analyze，分析这篇论文。整篇笔记都按“了解大模型基础但理解不牢的同学”来讲清楚，方法部分要讲清 Phase 1 到 Phase 5 的具体机制，实验部分按图逐项解释。
+使用 paper-review，基于原文和笔记生成严格的系统顶会风格中文审稿意见。
 ```
 
-```text
-使用 paper-review，基于原文 PDF、MinerU Markdown 和正式分析笔记生成体系结构/系统顶会风格的严格中文审稿意见。
-```
+## 安装位置
 
-## 配置文件
+仓库源码：
 
-主配置文件：
+`C:/Users/peng/Documents/PHR/Intellistream/projects/llm-systems-paper-agent`
 
-`config.yaml`
+Claude / Claudian skills：
 
-安装到 Obsidian 后的位置：
+`C:/Users/peng/Documents/PHR/obsidian_phr/.claude/skills`
 
-`C:/Users/peng/Documents/PHR/obsidian_phr/99_System/Config/research_interests.yaml`
+Codex skills：
 
-会议搜索配置：
+`C:/Users/peng/.codex/skills`
 
-`conf-papers/conf-papers.yaml`
-
-## 验证
-
-```powershell
-python -m py_compile `
-  "start-my-day/scripts/search_arxiv.py" `
-  "conf-papers/scripts/search_conf_papers.py" `
-  "paper-ingest/scripts/ingest_paper.py"
-```
-
-## paper-ingest updates
-
-- Better DBLP / DOI / OpenReview / arXiv source resolution
-- Safer blocked-source fallback handling
-- Download retry support for unstable fetches
-- Shorter generated asset slugs to reduce Windows path-length failures
-- Improved support for large-batch ingest workflows
+修改 skill 时，优先改仓库源码，再同步到 Claude 和 Codex 的 skill 安装目录。

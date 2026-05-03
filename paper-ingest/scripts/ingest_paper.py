@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -24,6 +25,10 @@ DEFAULT_VAULT = Path("C:/Users/peng/Documents/PHR/obsidian_phr")
 DEFAULT_CONFIG = DEFAULT_VAULT / "99_System" / "Config" / "research_interests.yaml"
 ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+PDF_MAGIC = b"%PDF"
+MIN_PDF_BYTES = 100 * 1024
+REQUEST_TIMEOUT = 120
+DOWNLOAD_RETRIES = 3
 
 
 def urlopen_no_proxy(request_or_url, timeout=60):
@@ -332,23 +337,194 @@ def is_missing(value: Optional[str]) -> bool:
     return False
 
 
-def download_file(url: str, output: Path) -> None:
-    headers = {"User-Agent": "Mozilla/5.0"}
-    last_exc = None
-    for _ in range(4):
+def parse_content_disposition_filename(header_value: Optional[str]) -> Optional[str]:
+    if not header_value:
+        return None
+    match = re.search(r"filename\*?=(?:UTF-8''|\"?)([^\";]+)", header_value, re.I)
+    if not match:
+        return None
+    return urllib.parse.unquote(match.group(1).strip().strip('"'))
+
+
+def inspect_pdf_file(path: Path) -> dict:
+    result = {
+        "exists": path.exists(),
+        "size_bytes": path.stat().st_size if path.exists() else 0,
+        "header_ok": False,
+        "size_ok": False,
+        "is_valid_pdf": False,
+    }
+    if not path.exists():
+        return result
+    with path.open("rb") as fh:
+        header = fh.read(8)
+    result["header_ok"] = header.startswith(PDF_MAGIC)
+    result["size_ok"] = result["size_bytes"] >= MIN_PDF_BYTES
+    result["is_valid_pdf"] = result["header_ok"] and result["size_ok"]
+    return result
+
+
+def extract_pdf_candidate_from_response(resp: requests.Response) -> Optional[str]:
+    content_type = (resp.headers.get("Content-Type") or "").lower()
+    if "pdf" in content_type:
+        return None
+    try:
+        html = resp.text
+    except Exception:
+        return None
+    return extract_pdf_from_html(html, resp.url)
+
+
+def build_pdf_candidates(metadata: dict, original_input: str) -> List[str]:
+    candidates: List[str] = []
+
+    def add(url: Optional[str]) -> None:
+        if not url:
+            return
+        value = str(url).strip()
+        if not value or value in candidates:
+            return
+        candidates.append(value)
+
+    add(metadata.get("pdf_url"))
+    add(metadata.get("source_url"))
+    for link in metadata.get("ee_links") or []:
+        add(link)
+
+    source_url = str(metadata.get("source_url") or "")
+    if "arxiv.org/abs/" in source_url:
+        add(source_url.replace("/abs/", "/pdf/") + ("" if source_url.endswith(".pdf") else ".pdf"))
+    if "openreview.net/forum?id=" in source_url:
+        forum_id = urllib.parse.parse_qs(urllib.parse.urlparse(source_url).query).get("id", [""])[0]
+        if forum_id:
+            add(f"https://openreview.net/pdf?id={urllib.parse.quote(forum_id)}")
+
+    if re.match(r"https?://", original_input.strip()):
+        add(original_input.strip())
+    return candidates
+
+
+def try_download_candidate(url: str, output: Path) -> Tuple[dict, Optional[str]]:
+    attempt = {
+        "url": url,
+        "status": "failed",
+        "http_status": None,
+        "content_type": None,
+        "resolved_url": None,
+        "size_bytes": 0,
+        "pdf_header_ok": False,
+        "pdf_size_ok": False,
+        "message": "",
+    }
+    tmp_path = output.with_suffix(".download")
+
+    for retry in range(1, DOWNLOAD_RETRIES + 1):
         try:
             session = requests_session_no_proxy()
-            with session.get(url, stream=True, timeout=120, allow_redirects=True) as resp:
+            with session.get(url, stream=True, timeout=REQUEST_TIMEOUT, allow_redirects=True) as resp:
+                attempt["http_status"] = resp.status_code
+                attempt["content_type"] = resp.headers.get("Content-Type")
+                attempt["resolved_url"] = resp.url
                 resp.raise_for_status()
+
+                discovered = extract_pdf_candidate_from_response(resp)
+                if discovered and discovered != url:
+                    attempt["status"] = "redirected-to-html"
+                    attempt["message"] = f"Resolved HTML landing page; extracted PDF candidate {discovered}"
+                    return attempt, discovered
+
                 output.parent.mkdir(parents=True, exist_ok=True)
-                with output.open("wb") as fh:
+                with tmp_path.open("wb") as fh:
                     for chunk in resp.iter_content(chunk_size=1024 * 64):
                         if chunk:
                             fh.write(chunk)
-                return
+
+            report = inspect_pdf_file(tmp_path)
+            attempt["size_bytes"] = report["size_bytes"]
+            attempt["pdf_header_ok"] = report["header_ok"]
+            attempt["pdf_size_ok"] = report["size_ok"]
+            if report["is_valid_pdf"]:
+                tmp_path.replace(output)
+                attempt["status"] = "success"
+                attempt["message"] = "Downloaded and validated as PDF."
+                return attempt, None
+
+            tmp_path.unlink(missing_ok=True)
+            attempt["status"] = "invalid-pdf"
+            attempt["message"] = (
+                f"Downloaded file failed validation: header_ok={report['header_ok']}, "
+                f"size_bytes={report['size_bytes']}."
+            )
         except Exception as exc:
-            last_exc = exc
-    raise last_exc
+            tmp_path.unlink(missing_ok=True)
+            attempt["status"] = "exception"
+            attempt["message"] = f"{type(exc).__name__}: {exc}"
+
+        if retry < DOWNLOAD_RETRIES:
+            time.sleep(1.5 ** retry)
+
+    return attempt, None
+
+
+def copy_local_pdf(local_pdf: Path, output: Path) -> dict:
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if local_pdf.resolve() != output.resolve():
+        shutil.copy2(local_pdf, output)
+    report = inspect_pdf_file(output)
+    if not report["is_valid_pdf"]:
+        raise SystemExit(
+            f"Local PDF validation failed for {local_pdf}: "
+            f"header_ok={report['header_ok']}, size_bytes={report['size_bytes']}"
+        )
+    return {
+        "mode": "local_copy",
+        "status": "success",
+        "source_path": str(local_pdf),
+        "resolved_url": str(local_pdf),
+        "size_bytes": report["size_bytes"],
+        "pdf_header_ok": report["header_ok"],
+        "pdf_size_ok": report["size_ok"],
+    }
+
+
+def ensure_pdf_asset(metadata: dict, original_input: str, local_pdf: Optional[Path], pdf_path: Path) -> Tuple[dict, List[dict]]:
+    if local_pdf:
+        record = copy_local_pdf(local_pdf, pdf_path)
+        return record, [record]
+
+    candidates = build_pdf_candidates(metadata, original_input)
+    attempts: List[dict] = []
+    queue = list(candidates)
+    seen = set()
+    while queue:
+        candidate = queue.pop(0)
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        attempt, discovered = try_download_candidate(candidate, pdf_path)
+        attempts.append(attempt)
+        if attempt["status"] == "success":
+            metadata["pdf_url"] = attempt.get("resolved_url") or candidate
+            return attempt, attempts
+        if discovered and discovered not in seen:
+            queue.insert(0, discovered)
+
+    existing = inspect_pdf_file(pdf_path)
+    if existing["is_valid_pdf"]:
+        record = {
+            "mode": "reuse_existing",
+            "status": "success",
+            "source_path": str(pdf_path),
+            "resolved_url": str(pdf_path),
+            "size_bytes": existing["size_bytes"],
+            "pdf_header_ok": existing["header_ok"],
+            "pdf_size_ok": existing["size_ok"],
+        }
+        attempts.append(record)
+        return record, attempts
+
+    detail = attempts[-1]["message"] if attempts else "No PDF candidate was resolved."
+    raise SystemExit(f"PDF download failed for {original_input}. Last error: {detail}")
 
 
 def resolve_input(input_value: str, title: Optional[str], authors: Optional[str]) -> Tuple[dict, Optional[Path], Optional[str]]:
@@ -802,13 +978,10 @@ def main() -> int:
     asset_dir.mkdir(parents=True, exist_ok=True)
 
     pdf_path = asset_dir / f"{asset_slug}.pdf"
-    if local_pdf:
-        if local_pdf.resolve() != pdf_path.resolve():
-            shutil.copy2(local_pdf, pdf_path)
-    else:
-        if not pdf_url:
-            raise SystemExit(f"Could not resolve PDF URL for input: {args.input}")
-        download_file(pdf_url, pdf_path)
+    if pdf_url:
+        metadata["pdf_url"] = pdf_url
+    pdf_download, pdf_attempts = ensure_pdf_asset(metadata, args.input, local_pdf, pdf_path)
+    pdf_validation = inspect_pdf_file(pdf_path)
 
     mineru_status = "skipped"
     raw_md: Optional[Path] = None
@@ -874,6 +1047,10 @@ def main() -> int:
         "vault": str(vault),
         "asset_dir": str(asset_dir),
         "pdf": str(pdf_path),
+        "pdf_download_status": pdf_download.get("status", "unknown"),
+        "pdf_download_record": pdf_download,
+        "pdf_download_attempts": pdf_attempts,
+        "pdf_validation": pdf_validation,
         "mineru_md": str(raw_md) if raw_md else None,
         "mineru_status": mineru_status,
         "mineru_attempts": mineru_attempts,
@@ -899,6 +1076,7 @@ def main() -> int:
         "assets_index": str(assets_index),
         "manifest": str(manifest_path),
         "pdf": str(pdf_path),
+        "pdf_download_status": pdf_download.get("status", "unknown"),
         "mineru_md": str(raw_md) if raw_md else None,
         "mineru_status": mineru_status,
         "domain": domain,
