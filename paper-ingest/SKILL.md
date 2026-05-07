@@ -1,50 +1,69 @@
 ---
 name: paper-ingest
-description: 论文资产入库：稳定下载 PDF，优先开放来源，写入 manifest，并调用 MinerU 生成 Markdown/图片；正式分析交给 paper-analyze。
+description: 论文资产入库：接收 arXiv ID、PDF URL 或本地 PDF，稳定下载 PDF，并调用 MinerU 生成标准 Markdown/图片资产；正式分析交给 paper-analyze。
 allowed-tools: Read, Write, Bash, WebFetch
 ---
 
 # 目标
 
-`paper-ingest` 只负责把论文原始资产稳定地放进 Obsidian，并把每一步状态记录清楚。
+把论文原始资产完整、稳定地放进 Obsidian，作为后续阅读、分析、翻译、审稿的证据底座。
 
-它的核心职责是：
+`paper-ingest` 只负责资产入库，不负责正式分析笔记，不负责导师七问，不负责综述五字段，也不负责审稿意见。它要做好的事情只有几件：
+
 - 尽量稳定地解析并下载论文 PDF
-- 优先尝试开放获取来源，而不是一开始就落到 ACM / IEEE 等较慢或受限页面
-- 验证下载结果确实是可用 PDF，而不是跳转页、错误页或登录页
-- 调用 MinerU 生成英文 Markdown 和图片
-- 生成 `assets.md` 与 `ingest_manifest.json`
-- 为后续 `paper-translate`、`paper-analyze`、`paper-review` 提供干净的资产入口
+- 验证下载结果确实是可用 PDF，而不是跳转页或错误页
+- 调用 MinerU 把 PDF 转成标准 Markdown 和图片
+- 把产物整理成统一、可复用的目录结构
+- 写出 `assets.md` 和 `ingest_manifest.json`
+- 为 `paper-translate`、`paper-analyze`、`paper-review` 提供干净资产入口
 
-它**不负责**生成正式分析笔记，也不负责审稿意见。
+# 必须产出
+
+- 原始 PDF
+- MinerU 转换得到的英文 Markdown
+- MinerU 提取的图片/媒体资产
+- 资产索引 `assets.md`
+- 机器可读清单 `ingest_manifest.json`
 
 # 关键原则
 
-1. **PDF 下载成功与 MinerU 成功分开判断**
-   - PDF 已稳定落盘且校验通过，就算入库成功。
-   - MinerU 失败不应混淆成“PDF 没下载下来”。
+1. 下载成功与 MinerU 成功分开判断
+   - PDF 成功落盘并通过校验，就算资产入库成功。
+   - MinerU 失败不能伪装成“已经完整转好 Markdown”。
 
-2. **必须做真 PDF 校验**
-   - 不只看 HTTP 200。
+2. 优先做真实 PDF 校验
+   - 不能只看 HTTP 200。
    - 至少检查：
-     - 文件是否存在
-     - 文件头是否为 `%PDF`
-     - 文件大小是否达到最小阈值
+     - 文件存在
+     - 文件头是 `%PDF`
+     - 文件大小足够
 
-3. **开放来源优先，失败快速**
-   - 默认优先顺序：
+3. 多源回退下载
+   - 优先顺序通常是：
      - arXiv PDF
      - OpenReview PDF
-     - USENIX / MLSys / 开放 proceedings PDF
-     - 作者主页 / 高校主页 / 个人站公开 PDF
-     - venue 页面可直接抽取出的 PDF
-     - DOI / ACM / IEEE 等较慢或可能受限来源
-   - 如果拿到的是 HTML 跳转页，优先从页面里抽取开放 PDF 候选链接，再继续尝试。
-   - 如果下载内容不是有效 PDF，要尽快失败并切换下一个候选源。
+     - venue / DOI 页面解析出的 PDF
+     - DBLP 或其他外链
 
-4. **所有关键状态都写入 manifest**
-   - 后续必须能看出失败究竟发生在：
-     - PDF 解析
+4. 产物结构必须稳定
+   - 标准目录形态应尽量保持为：
+     - `20_Research/Papers/_assets/<paper-slug>/<paper-slug>.pdf`
+     - `20_Research/Papers/_assets/<paper-slug>/mineru/<paper-id-or-stem>/auto/<paper-id-or-stem>.md`
+     - `20_Research/Papers/_assets/<paper-slug>/mineru/<paper-id-or-stem>/auto/images/...`
+   - 图片应尽量重命名为可读别名，例如：
+     - `fig5-workflow.jpg`
+     - `fig8-latency.jpg`
+     - `fig9-memory-breakdown.jpg`
+
+5. 不把历史补丁文件当作标准成功产物
+   - `simple.pdf`
+   - `simple.txt`
+   - `fallback.md`
+   这些如果只是在特殊事故里出现，最多作为历史残留记录，不能当成标准 ingest 产物去鼓励复用。
+
+6. 所有关键状态都要写进 manifest
+   - 后续必须能看出问题到底发生在：
+     - 输入解析
      - PDF 下载
      - PDF 校验
      - MinerU 转换
@@ -61,25 +80,89 @@ allowed-tools: Read, Write, Bash, WebFetch
 # 默认路径
 
 - Obsidian vault：`C:/Users/peng/Documents/PHR/obsidian_phr`
+- 配置文件：`C:/Users/peng/Documents/PHR/obsidian_phr/99_System/Config/research_interests.yaml`
 - 资产目录：`20_Research/Papers/_assets/<paper-slug>/`
 - 脚本：`scripts/ingest_paper.py`
 
-# 工作流
+# 工作流程
 
-1. 解析输入，识别 arXiv / DBLP / HTML 页面 / PDF URL / 本地 PDF。
-2. 生成 PDF 候选源列表，并按开放来源优先级依次尝试。
-3. 下载后做 PDF 校验。
-4. 把下载轨迹写进 `ingest_manifest.json`，包括：
-   - `pdf_download_status`
-   - `pdf_download_record`
-   - `pdf_download_attempts`
-   - `pdf_validation`
-5. 仅在 PDF 有效时再调用 MinerU。
-6. 生成：
-   - 原始 PDF
-   - MinerU Markdown
-   - 图片目录
-   - `assets.md`
-   - `ingest_manifest.json`
-7. 后续如需中文 Markdown，调用 `paper-translate`。
-8. 后续如需正式笔记，调用 `paper-analyze`。
+1. 先调用 `paper-search` 查重，确认是否已有 PDF、MinerU Markdown 或正式笔记。
+2. 解析输入，识别 arXiv / DBLP / landing page / PDF URL / 本地 PDF。
+3. 生成 PDF 候选源列表，并按优先级依次尝试。
+4. 下载后做 PDF 校验。
+5. 只有 PDF 校验通过时，才调用 MinerU：
+
+```powershell
+mineru -p <pdf> -o <output> -b pipeline
+```
+
+6. 保存 MinerU 输出的 Markdown、图片和相关资产，保持标准目录层级。
+7. 对图片做可读别名重命名，并把原名到别名的映射写进 manifest 和 `assets.md`。
+8. 写入 `assets.md` 和 `ingest_manifest.json`。
+9. 返回下一步建议：
+   - 先调用 `paper-translate` 生成中文版 Markdown
+   - 再调用 `paper-analyze` 生成正式论文笔记
+
+# 推荐命令
+
+```powershell
+python scripts/ingest_paper.py `
+  --input "2402.12345" `
+  --vault "C:/Users/peng/Documents/PHR/obsidian_phr" `
+  --domain "LLM Inference Systems"
+```
+
+```powershell
+python scripts/ingest_paper.py `
+  --input "https://dblp.org/rec/conf/asplos/xxxx" `
+  --vault "C:/Users/peng/Documents/PHR/obsidian_phr"
+```
+
+```powershell
+python scripts/ingest_paper.py `
+  --input "C:/path/to/paper.pdf" `
+  --title "Paper Title" `
+  --authors "Author A, Author B" `
+  --domain "Hierarchical State Optimization"
+```
+
+# 输出要求
+
+`assets.md` 至少应包含：
+
+- 论文标题 / 作者 / 年份 / venue / 链接
+- PDF 链接
+- 来源链接
+- MinerU Markdown 链接
+- 资产目录
+- manifest 链接
+- 推荐正式笔记路径
+- 分类结果与原因
+- 图片目录与图片别名映射
+- MinerU 状态
+
+`ingest_manifest.json` 至少应包含：
+
+- 论文元数据
+- PDF 下载状态与尝试记录
+- PDF 校验信息
+- MinerU 状态与尝试记录
+- 资产路径
+- 推荐正式笔记路径
+
+# 规则
+
+- 缺失证据写 `TBD`，不要编造。
+- 保留 MinerU Markdown 作为原始证据。
+- 不创建或覆盖正式论文分析笔记，除非用户明确要求。
+- Obsidian 图片使用 `![[image.png|800]]`。
+- Obsidian 链接使用 display alias。
+- 如果 MinerU 没有产出标准 Markdown 结构，不要把半成品静默冒充成标准成功结果。
+
+# 与其他 skill 的关系
+
+- `paper-search`：先查重，再决定是否入库
+- `paper-translate`：在入库完成后生成中文版 Markdown
+- `paper-analyze`：基于英文原始证据生成正式分析笔记
+- `paper-review`：基于原文、笔记和模板生成严格审稿意见
+- `start-my-day` / `conf-papers`：会调用本 skill 完成批量资产入库

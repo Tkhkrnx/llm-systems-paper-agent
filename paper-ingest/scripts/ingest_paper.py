@@ -753,6 +753,20 @@ def find_latest_markdown(mineru_output: Path) -> Optional[Path]:
     return md_files[0] if md_files else None
 
 
+def standardize_mineru_markdown(raw_md: Optional[Path]) -> Optional[Path]:
+    if not raw_md or not raw_md.exists():
+        return raw_md
+    parent = raw_md.parent
+    target_stem = raw_md.parent.parent.name if raw_md.parent.name == "auto" else raw_md.stem
+    target = parent / f"{target_stem}.md"
+    if raw_md.name == target.name:
+        return raw_md
+    if target.exists():
+        return target
+    raw_md.rename(target)
+    return target
+
+
 def run_mineru(pdf_path: Path, mineru_output: Path, config: dict) -> Tuple[str, Optional[Path], List[dict]]:
     mineru_output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -1128,7 +1142,11 @@ def main() -> int:
         raw_md = preexisting_md
         mineru_status = "success"
 
+    raw_md = standardize_mineru_markdown(raw_md)
+
     extracted = extract_title_authors_from_markdown(raw_md)
+    if extracted.get("title") and (is_missing(metadata.get("title")) or metadata.get("title") == metadata.get("paper_id")):
+        metadata["title"] = extracted["title"]
     if metadata.get("input_type") == "local_pdf":
         if extracted.get("title") and extracted["title"] != metadata.get("title"):
             metadata["title"] = extracted["title"]
@@ -1136,8 +1154,11 @@ def main() -> int:
             metadata["authors"] = extracted["authors"]
         if extracted.get("abstract") and is_missing(metadata.get("abstract")):
             metadata["abstract"] = extracted["abstract"]
-    elif extracted.get("abstract") and is_missing(metadata.get("abstract")):
-        metadata["abstract"] = extracted["abstract"]
+    else:
+        if extracted.get("authors") and is_missing(metadata.get("authors")):
+            metadata["authors"] = extracted["authors"]
+        if extracted.get("abstract") and is_missing(metadata.get("abstract")):
+            metadata["abstract"] = extracted["abstract"]
 
     domain, classification_reason, matched_keywords = infer_domain(metadata, raw_md, config)
     metadata["domain"] = domain
