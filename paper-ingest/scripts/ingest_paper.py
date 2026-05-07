@@ -43,6 +43,119 @@ def requests_session_no_proxy() -> requests.Session:
     return session
 
 
+def looks_like_pdf_url(url: str) -> bool:
+    lower = (url or "").lower()
+    return (
+        lower.endswith(".pdf")
+        or "/pdf/" in lower
+        or "pdf?id=" in lower
+        or "download=true" in lower
+        or "download=1" in lower
+        or "viewcontent.cgi" in lower
+        or "stamp/stamp.jsp" in lower
+    )
+
+
+def candidate_source_rank(url: str) -> int:
+    lower = (url or "").lower()
+    if "arxiv.org/pdf/" in lower:
+        return 0
+    if "openreview.net/pdf" in lower:
+        return 1
+    if "usenix.org" in lower and looks_like_pdf_url(lower):
+        return 2
+    if "proceedings.mlsys.org" in lower and looks_like_pdf_url(lower):
+        return 3
+    if any(host in lower for host in [
+        "cs.", ".edu/", "people.", "faculty.", "sites.google.com/",
+        "github.io/", "personal.", "homepages.", "~"
+    ]) and looks_like_pdf_url(lower):
+        return 4
+    if looks_like_pdf_url(lower):
+        return 5
+    if "usenix.org" in lower:
+        return 6
+    if "arxiv.org/abs/" in lower:
+        return 7
+    if "openreview.net/forum" in lower:
+        return 8
+    if "proceedings.mlsys.org" in lower:
+        return 9
+    if "doi.org/" in lower:
+        return 20
+    if "dl.acm.org" in lower:
+        return 21
+    if "ieeexplore.ieee.org" in lower:
+        return 22
+    return 10
+
+
+def normalize_candidate_pdf_url(url: str) -> str:
+    if not url:
+        return url
+    parsed = urllib.parse.urlparse(url)
+    lower = url.lower()
+
+    if "arxiv.org/abs/" in lower:
+        arxiv_id = normalize_arxiv_id(parsed.path.rsplit("/abs/", 1)[-1])
+        return f"{parsed.scheme}://{parsed.netloc}/pdf/{arxiv_id}.pdf"
+
+    if "openreview.net" in lower:
+        qs = urllib.parse.parse_qs(parsed.query)
+        if ("/forum" in parsed.path or "/pdf" in parsed.path) and qs.get("id"):
+            paper_id = qs["id"][0]
+            return f"{parsed.scheme}://{parsed.netloc}/pdf?id={urllib.parse.quote(paper_id)}"
+
+    if "ieeexplore.ieee.org/document/" in lower:
+        m = re.search(r"/document/(\d+)", parsed.path)
+        if m:
+            arnumber = m.group(1)
+            return f"{parsed.scheme}://{parsed.netloc}/stamp/stamp.jsp?tp=&arnumber={arnumber}"
+
+    if "dl.acm.org/doi/" in lower and "/doi/pdf/" not in lower:
+        doi_path = parsed.path.split("/doi/", 1)[-1].lstrip("/")
+        return f"{parsed.scheme}://{parsed.netloc}/doi/pdf/{doi_path}"
+
+    if "proceedings.mlsys.org/paper_files/" in lower and "abstract-conference.html" in lower:
+        return url.replace("-Abstract-Conference.html", "-Paper.pdf")
+
+    return url
+
+
+def expand_candidate_pdf_urls(url: str) -> List[str]:
+    candidates: List[str] = []
+    if not url:
+        return candidates
+
+    def add(value: Optional[str]) -> None:
+        if value and value not in candidates:
+            candidates.append(value)
+
+    normalized = normalize_candidate_pdf_url(url)
+    add(url)
+    add(normalized)
+
+    lower = normalized.lower()
+    if "proceedings.mlsys.org/paper_files/" in lower and "-paper.pdf" in lower:
+        add(normalized.replace("-Paper.pdf", "-Paper-Conference.pdf"))
+    if "proceedings.mlsys.org/paper_files/" in lower and "-paper-conference.pdf" in lower:
+        add(normalized.replace("-Paper-Conference.pdf", "-Paper.pdf"))
+    if "usenix.org/conference/" in lower and not looks_like_pdf_url(lower):
+        add(normalized.rstrip("/") + ".pdf")
+    return sorted(candidates, key=lambda item: (candidate_source_rank(item), len(item)))
+
+
+def prioritize_candidate_urls(urls: List[str]) -> List[str]:
+    deduped: List[str] = []
+    seen = set()
+    for url in urls:
+        for candidate in expand_candidate_pdf_urls(url):
+            if candidate not in seen:
+                seen.add(candidate)
+                deduped.append(candidate)
+    return sorted(deduped, key=lambda item: (candidate_source_rank(item), len(item)))
+
+
 def safe_name(text: str, fallback: str = "paper") -> str:
     text = (text or fallback).strip()
     text = re.sub(r'[ /\\:*?"<>|]+', "_", text)
@@ -206,27 +319,47 @@ def html_unescape(text: str) -> str:
     return html.unescape(text)
 
 
+def extract_open_candidate_links(html: str, base_url: str) -> List[str]:
+    candidates: List[str] = []
+
+    def add(value: Optional[str]) -> None:
+        if not value:
+            return
+        resolved = urllib.parse.urljoin(base_url, value)
+        if resolved not in candidates:
+            candidates.append(resolved)
+
+    for pattern in [
+        r'<meta[^>]+name=["\']citation_pdf_url["\'][^>]+content=["\']([^"\']+)["\']',
+        r'href=["\']([^"\']+\.pdf(?:\?[^"\']*)?)["\']',
+        r'href=["\']([^"\']*openreview\.net/forum\?id=[^"\']+)["\']',
+        r'href=["\']([^"\']*openreview\.net/pdf\?id=[^"\']+)["\']',
+        r'href=["\']([^"\']*arxiv\.org/abs/[^"\']+)["\']',
+        r'href=["\']([^"\']*arxiv\.org/pdf/[^"\']+)["\']',
+        r'href=["\']([^"\']*usenix\.org/[^"\']+)["\']',
+        r'href=["\']([^"\']*proceedings\.mlsys\.org/[^"\']+)["\']',
+        r'href=["\']([^"\']*(?:cs\.|people\.|faculty\.|sites\.google\.com|github\.io|personal\.|homepages\.|~)[^"\']*\.pdf(?:\?[^"\']*)?)["\']',
+        r'href=["\']([^"\']*doi\.org/[^"\']+)["\']',
+        r'href=["\']([^"\']*dl\.acm\.org/[^"\']+)["\']',
+        r'href=["\']([^"\']*ieeexplore\.ieee\.org/[^"\']+)["\']',
+    ]:
+        for match in re.finditer(pattern, html, re.I):
+            add(match.group(1))
+
+    return prioritize_candidate_urls(candidates)
+
+
 def resolve_pdf_url_from_links(links: List[str]) -> Optional[str]:
-    for link in links:
+    prioritized = prioritize_candidate_urls(links)
+    for link in prioritized:
         lower = link.lower()
-        if lower.endswith(".pdf"):
-            return link
-        if "arxiv.org/abs/" in lower:
-            arxiv_id = lower.rsplit("/abs/", 1)[-1].split("v")[0]
-            return f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-        if "openreview.net/forum?id=" in lower:
-            forum_id = urllib.parse.parse_qs(urllib.parse.urlparse(link).query).get("id", [""])[0]
-            if forum_id:
-                return f"https://openreview.net/pdf?id={urllib.parse.quote(forum_id)}"
-        if "proceedings.mlsys.org/paper_files/" in lower and "abstract-conference.html" in lower:
-            candidate = link.replace("-Abstract-Conference.html", "-Paper-Conference.pdf")
-            if candidate.lower().endswith(".pdf"):
-                return candidate
-        if "doi.org/" in lower:
+        if looks_like_pdf_url(lower):
+            return normalize_candidate_pdf_url(link)
+        if "doi.org/" in lower or "usenix.org" in lower or "proceedings.mlsys.org" in lower:
             pdf = discover_pdf_from_page(link)
             if pdf:
                 return pdf
-    for link in links:
+    for link in prioritized:
         lower = link.lower()
         if lower.startswith("https://") or lower.startswith("http://"):
             try:
@@ -234,12 +367,11 @@ def resolve_pdf_url_from_links(links: List[str]) -> Optional[str]:
                 with urlopen_no_proxy(req, timeout=30) as resp:
                     ctype = (resp.headers.get("Content-Type") or "").lower()
                     if "pdf" in ctype:
-                        return link
+                        return normalize_candidate_pdf_url(link)
                     html = resp.read().decode("utf-8", errors="ignore")
-                    m = re.search(r'href=[\"\\\']([^\"\\\']+\\.pdf(?:\\?[^\"\\\']*)?)[\"\\\']', html, re.I)
-                    if m:
-                        pdf = urllib.parse.urljoin(link, m.group(1))
-                        return pdf
+                    candidates = extract_open_candidate_links(html, link)
+                    if candidates:
+                        return candidates[0]
             except Exception:
                 continue
     return None
@@ -266,35 +398,22 @@ def extract_pdf_from_html(html: str, base_url: str) -> Optional[str]:
 
 
 def discover_pdf_from_page(url: str) -> Optional[str]:
+    normalized = normalize_candidate_pdf_url(url)
+    if looks_like_pdf_url(normalized):
+        return normalized
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urlopen_no_proxy(req, timeout=45) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
     except Exception:
-        return None
+        return normalized if looks_like_pdf_url(normalized) else None
     pdf = extract_pdf_from_html(html, url)
     if pdf:
-        return pdf
-    # fall back to first likely external edition link
-    for pattern in [
-        r'href=[\"\']([^\"\']*openreview\.net/forum\?id=[^\"\']+)[\"\']',
-        r'href=[\"\']([^\"\']*openreview\.net[^\"\']+)[\"\']',
-        r'href=[\"\']([^\"\']*doi\.org/[^\"\']+)[\"\']',
-        r'href=[\"\']([^\"\']*usenix\.org/[^\"\']+)[\"\']',
-        r'href=[\"\']([^\"\']*arxiv\.org/abs/[^\"\']+)[\"\']',
-        r'href=[\"\']([^\"\']*proceedings\.mlsys\.org/[^\"\']+)[\"\']',
-    ]:
-        m = re.search(pattern, html, re.I)
-        if m:
-            ext = m.group(1)
-            if "openreview.net/forum?id=" in ext:
-                q = urllib.parse.parse_qs(urllib.parse.urlparse(ext).query).get("id", [""])[0]
-                if q:
-                    return f"https://openreview.net/pdf?id={urllib.parse.quote(q)}"
-            pdf = discover_pdf_from_page(ext)
-            if pdf:
-                return pdf
-    return None
+        return normalize_candidate_pdf_url(pdf)
+    candidates = extract_open_candidate_links(html, url)
+    if candidates:
+        return candidates[0]
+    return normalized if looks_like_pdf_url(normalized) else None
 
 
 def discover_pdf_from_dblp_html(dblp_url: str) -> Optional[str]:
@@ -381,10 +500,7 @@ def build_pdf_candidates(metadata: dict, original_input: str) -> List[str]:
     def add(url: Optional[str]) -> None:
         if not url:
             return
-        value = str(url).strip()
-        if not value or value in candidates:
-            return
-        candidates.append(value)
+        candidates.append(str(url).strip())
 
     add(metadata.get("pdf_url"))
     add(metadata.get("source_url"))
@@ -401,7 +517,7 @@ def build_pdf_candidates(metadata: dict, original_input: str) -> List[str]:
 
     if re.match(r"https?://", original_input.strip()):
         add(original_input.strip())
-    return candidates
+    return prioritize_candidate_urls(candidates)
 
 
 def try_download_candidate(url: str, output: Path) -> Tuple[dict, Optional[str]]:
@@ -418,50 +534,58 @@ def try_download_candidate(url: str, output: Path) -> Tuple[dict, Optional[str]]
     }
     tmp_path = output.with_suffix(".download")
 
-    for retry in range(1, DOWNLOAD_RETRIES + 1):
-        try:
-            session = requests_session_no_proxy()
-            with session.get(url, stream=True, timeout=REQUEST_TIMEOUT, allow_redirects=True) as resp:
-                attempt["http_status"] = resp.status_code
-                attempt["content_type"] = resp.headers.get("Content-Type")
-                attempt["resolved_url"] = resp.url
-                resp.raise_for_status()
+    for candidate in expand_candidate_pdf_urls(url):
+        for retry in range(1, DOWNLOAD_RETRIES + 1):
+            try:
+                session = requests_session_no_proxy()
+                session.headers.update({
+                    "Accept": "application/pdf,text/html,application/xhtml+xml",
+                    "Referer": urllib.parse.urlunparse(
+                        urllib.parse.urlparse(candidate)._replace(path="", params="", query="", fragment="")
+                    ) or candidate,
+                })
+                with session.get(candidate, stream=True, timeout=REQUEST_TIMEOUT, allow_redirects=True) as resp:
+                    attempt["url"] = candidate
+                    attempt["http_status"] = resp.status_code
+                    attempt["content_type"] = resp.headers.get("Content-Type")
+                    attempt["resolved_url"] = resp.url
+                    resp.raise_for_status()
 
-                discovered = extract_pdf_candidate_from_response(resp)
-                if discovered and discovered != url:
-                    attempt["status"] = "redirected-to-html"
-                    attempt["message"] = f"Resolved HTML landing page; extracted PDF candidate {discovered}"
-                    return attempt, discovered
+                    discovered = extract_pdf_candidate_from_response(resp)
+                    if discovered and discovered != candidate:
+                        attempt["status"] = "redirected-to-html"
+                        attempt["message"] = f"Resolved HTML landing page; extracted PDF candidate {discovered}"
+                        return attempt, discovered
 
-                output.parent.mkdir(parents=True, exist_ok=True)
-                with tmp_path.open("wb") as fh:
-                    for chunk in resp.iter_content(chunk_size=1024 * 64):
-                        if chunk:
-                            fh.write(chunk)
+                    output.parent.mkdir(parents=True, exist_ok=True)
+                    with tmp_path.open("wb") as fh:
+                        for chunk in resp.iter_content(chunk_size=1024 * 64):
+                            if chunk:
+                                fh.write(chunk)
 
-            report = inspect_pdf_file(tmp_path)
-            attempt["size_bytes"] = report["size_bytes"]
-            attempt["pdf_header_ok"] = report["header_ok"]
-            attempt["pdf_size_ok"] = report["size_ok"]
-            if report["is_valid_pdf"]:
-                tmp_path.replace(output)
-                attempt["status"] = "success"
-                attempt["message"] = "Downloaded and validated as PDF."
-                return attempt, None
+                report = inspect_pdf_file(tmp_path)
+                attempt["size_bytes"] = report["size_bytes"]
+                attempt["pdf_header_ok"] = report["header_ok"]
+                attempt["pdf_size_ok"] = report["size_ok"]
+                if report["is_valid_pdf"]:
+                    tmp_path.replace(output)
+                    attempt["status"] = "success"
+                    attempt["message"] = "Downloaded and validated as PDF."
+                    return attempt, None
 
-            tmp_path.unlink(missing_ok=True)
-            attempt["status"] = "invalid-pdf"
-            attempt["message"] = (
-                f"Downloaded file failed validation: header_ok={report['header_ok']}, "
-                f"size_bytes={report['size_bytes']}."
-            )
-        except Exception as exc:
-            tmp_path.unlink(missing_ok=True)
-            attempt["status"] = "exception"
-            attempt["message"] = f"{type(exc).__name__}: {exc}"
+                tmp_path.unlink(missing_ok=True)
+                attempt["status"] = "invalid-pdf"
+                attempt["message"] = (
+                    f"Downloaded file failed validation: header_ok={report['header_ok']}, "
+                    f"size_bytes={report['size_bytes']}."
+                )
+            except Exception as exc:
+                tmp_path.unlink(missing_ok=True)
+                attempt["status"] = "exception"
+                attempt["message"] = f"{type(exc).__name__}: {exc}"
 
-        if retry < DOWNLOAD_RETRIES:
-            time.sleep(1.5 ** retry)
+            if retry < DOWNLOAD_RETRIES:
+                time.sleep(1.2 ** retry)
 
     return attempt, None
 
@@ -544,7 +668,7 @@ def resolve_input(input_value: str, title: Optional[str], authors: Optional[str]
         }, local, None
 
     arxiv_match = re.search(r"(\d{4}\.\d{4,5}(?:v\d+)?)", value)
-    if is_arxiv_id(value) or "arxiv.org" in value or arxiv_match:
+    if is_arxiv_id(value) or "arxiv.org" in value:
         arxiv_id = normalize_arxiv_id(arxiv_match.group(1) if arxiv_match else value)
         metadata = fetch_arxiv_metadata(arxiv_id)
         if title:
@@ -567,21 +691,22 @@ def resolve_input(input_value: str, title: Optional[str], authors: Optional[str]
     if re.match(r"https?://", value):
         parsed = urllib.parse.urlparse(value)
         guessed = Path(parsed.path).stem or "paper"
-        pdf_guess = discover_pdf_from_page(value) or discover_pdf_from_dblp_html(value) or value
-        if not isinstance(pdf_guess, str) or not pdf_guess.strip():
-            pdf_guess = value
-        if value.lower().endswith(".pdf") or "pdf" in parsed.path.lower():
+        fast_pdf_guess = normalize_candidate_pdf_url(value)
+        if looks_like_pdf_url(fast_pdf_guess):
             return {
                 "paper_id": guessed,
                 "title": title or guessed,
                 "authors": authors or "TBD",
                 "abstract": "TBD",
                 "published": "TBD",
-            "source_url": value,
-            "pdf_url": pdf_guess,
-            "categories": [],
-            "input_type": "pdf_url",
-        }, None, value
+                "source_url": value,
+                "pdf_url": fast_pdf_guess,
+                "categories": [],
+                "input_type": "pdf_url",
+            }, None, fast_pdf_guess
+        pdf_guess = discover_pdf_from_page(value) or discover_pdf_from_dblp_html(value) or fast_pdf_guess
+        if not isinstance(pdf_guess, str) or not pdf_guess.strip():
+            pdf_guess = value
         return {
             "paper_id": guessed,
             "title": title or guessed,
