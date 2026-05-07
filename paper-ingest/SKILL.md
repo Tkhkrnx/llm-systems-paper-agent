@@ -166,3 +166,10 @@ python scripts/ingest_paper.py `
 - `paper-analyze`：基于英文原始证据生成正式分析笔记
 - `paper-review`：基于原文、笔记和模板生成严格审稿意见
 - `start-my-day` / `conf-papers`：会调用本 skill 完成批量资产入库
+
+# Directory Rule
+
+- If the paper directory already contains a PDF, ingest must use that PDF in place and treat that directory as the asset directory.
+- If the caller explicitly points to a paper directory, PDF download, MinerU output, assets.md, and ingest_manifest.json must all stay in that same paper directory.
+- Only when the target paper directory does not already have a PDF may ingest download one. Temporary short-path staging is allowed internally, but final assets must be written back to the original paper directory.
+

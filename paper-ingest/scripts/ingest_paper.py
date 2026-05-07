@@ -3,12 +3,14 @@
 """Ingest paper assets into Obsidian and prepare them for later analysis."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -41,6 +43,44 @@ def requests_session_no_proxy() -> requests.Session:
     session.trust_env = False
     session.headers.update({"User-Agent": "Mozilla/5.0"})
     return session
+
+
+def windows_long_path(path: Path) -> str:
+    raw = str(path.resolve())
+    if os.name != "nt":
+        return raw
+    if raw.startswith("\\\\?\\"):
+        return raw
+    if raw.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + raw.lstrip("\\")
+    return "\\\\?\\" + raw
+
+
+def path_exists_safe(path: Path) -> bool:
+    try:
+        return os.path.exists(windows_long_path(path))
+    except Exception:
+        return path.exists()
+
+
+def open_binary_safe(path: Path, mode: str):
+    return open(windows_long_path(path), mode)
+
+
+def copy_file_safe(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(windows_long_path(src), windows_long_path(dst))
+
+
+def copy_tree_safe(src: Path, dst: Path) -> None:
+    for item in src.rglob("*"):
+        relative = item.relative_to(src)
+        target = dst / relative
+        if item.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(windows_long_path(item), windows_long_path(target))
 
 
 def looks_like_pdf_url(url: str) -> bool:
@@ -168,6 +208,41 @@ def slugify(text: str, fallback: str = "paper") -> str:
     value = re.sub(r"-+", "-", value).strip("-")
     value = value[:60].strip("-")
     return value or fallback
+
+
+def compact_slug(text: str, fallback: str = "paper", max_len: int = 48) -> str:
+    value = slugify(text, fallback=fallback)
+    if len(value) <= max_len:
+        return value
+    compact = re.sub(r"\b(with|for|and|the|of|to|a|an)\b", "-", value)
+    compact = re.sub(r"-+", "-", compact).strip("-")
+    if len(compact) <= max_len:
+        return compact
+    parts = [part for part in compact.split("-") if part]
+    shortened: List[str] = []
+    for part in parts:
+        keep = 4 if len(part) > 8 else min(len(part), 6)
+        shortened.append(part[:keep])
+    merged = "-".join(shortened)
+    merged = re.sub(r"-+", "-", merged).strip("-")
+    return merged[:max_len].rstrip("-") or fallback
+
+
+def preferred_mineru_stem(metadata: dict, pdf_path: Optional[Path] = None) -> str:
+    """Pick a short, stable stem for MinerU outputs from the start."""
+    candidates = [
+        str(metadata.get("paper_id") or "").strip(),
+        str(metadata.get("arxiv_id") or "").strip(),
+        str(metadata.get("title") or "").strip(),
+        pdf_path.stem if pdf_path else "",
+    ]
+    for candidate in candidates:
+        if not candidate or candidate in {"TBD", "Unknown", "None"}:
+            continue
+        if re.fullmatch(r"\d{4}\.\d{4,5}(v\d+)?", candidate):
+            return candidate.replace(".", "-")
+        return compact_slug(candidate, fallback="paper", max_len=40)
+    return "paper"
 
 
 def tag_slug(text: str, fallback: str = "uncategorized") -> str:
@@ -467,15 +542,15 @@ def parse_content_disposition_filename(header_value: Optional[str]) -> Optional[
 
 def inspect_pdf_file(path: Path) -> dict:
     result = {
-        "exists": path.exists(),
-        "size_bytes": path.stat().st_size if path.exists() else 0,
+        "exists": path_exists_safe(path),
+        "size_bytes": os.path.getsize(windows_long_path(path)) if path_exists_safe(path) else 0,
         "header_ok": False,
         "size_ok": False,
         "is_valid_pdf": False,
     }
-    if not path.exists():
+    if not path_exists_safe(path):
         return result
-    with path.open("rb") as fh:
+    with open_binary_safe(path, "rb") as fh:
         header = fh.read(8)
     result["header_ok"] = header.startswith(PDF_MAGIC)
     result["size_ok"] = result["size_bytes"] >= MIN_PDF_BYTES
@@ -532,60 +607,67 @@ def try_download_candidate(url: str, output: Path) -> Tuple[dict, Optional[str]]
         "pdf_size_ok": False,
         "message": "",
     }
-    tmp_path = output.with_suffix(".download")
+    temp_dir = Path(tempfile.mkdtemp(prefix="paper_pdf_dl_"))
+    tmp_path = temp_dir / "paper.pdf"
 
-    for candidate in expand_candidate_pdf_urls(url):
-        for retry in range(1, DOWNLOAD_RETRIES + 1):
-            try:
-                session = requests_session_no_proxy()
-                session.headers.update({
-                    "Accept": "application/pdf,text/html,application/xhtml+xml",
-                    "Referer": urllib.parse.urlunparse(
-                        urllib.parse.urlparse(candidate)._replace(path="", params="", query="", fragment="")
-                    ) or candidate,
-                })
-                with session.get(candidate, stream=True, timeout=REQUEST_TIMEOUT, allow_redirects=True) as resp:
-                    attempt["url"] = candidate
-                    attempt["http_status"] = resp.status_code
-                    attempt["content_type"] = resp.headers.get("Content-Type")
-                    attempt["resolved_url"] = resp.url
-                    resp.raise_for_status()
+    try:
+        for candidate in expand_candidate_pdf_urls(url):
+            for retry in range(1, DOWNLOAD_RETRIES + 1):
+                try:
+                    session = requests_session_no_proxy()
+                    session.headers.update({
+                        "Accept": "application/pdf,text/html,application/xhtml+xml",
+                        "Referer": urllib.parse.urlunparse(
+                            urllib.parse.urlparse(candidate)._replace(path="", params="", query="", fragment="")
+                        ) or candidate,
+                    })
+                    with session.get(candidate, stream=True, timeout=REQUEST_TIMEOUT, allow_redirects=True) as resp:
+                        attempt["url"] = candidate
+                        attempt["http_status"] = resp.status_code
+                        attempt["content_type"] = resp.headers.get("Content-Type")
+                        attempt["resolved_url"] = resp.url
+                        resp.raise_for_status()
 
-                    discovered = extract_pdf_candidate_from_response(resp)
-                    if discovered and discovered != candidate:
-                        attempt["status"] = "redirected-to-html"
-                        attempt["message"] = f"Resolved HTML landing page; extracted PDF candidate {discovered}"
-                        return attempt, discovered
+                        discovered = extract_pdf_candidate_from_response(resp)
+                        if discovered and discovered != candidate:
+                            attempt["status"] = "redirected-to-html"
+                            attempt["message"] = f"Resolved HTML landing page; extracted PDF candidate {discovered}"
+                            return attempt, discovered
 
-                    output.parent.mkdir(parents=True, exist_ok=True)
-                    with tmp_path.open("wb") as fh:
-                        for chunk in resp.iter_content(chunk_size=1024 * 64):
-                            if chunk:
-                                fh.write(chunk)
+                        output.parent.mkdir(parents=True, exist_ok=True)
+                        with tmp_path.open("wb") as fh:
+                            for chunk in resp.iter_content(chunk_size=1024 * 64):
+                                if chunk:
+                                    fh.write(chunk)
 
-                report = inspect_pdf_file(tmp_path)
-                attempt["size_bytes"] = report["size_bytes"]
-                attempt["pdf_header_ok"] = report["header_ok"]
-                attempt["pdf_size_ok"] = report["size_ok"]
-                if report["is_valid_pdf"]:
-                    tmp_path.replace(output)
-                    attempt["status"] = "success"
-                    attempt["message"] = "Downloaded and validated as PDF."
-                    return attempt, None
+                    report = inspect_pdf_file(tmp_path)
+                    attempt["size_bytes"] = report["size_bytes"]
+                    attempt["pdf_header_ok"] = report["header_ok"]
+                    attempt["pdf_size_ok"] = report["size_ok"]
+                    if report["is_valid_pdf"]:
+                        shutil.copy2(tmp_path, windows_long_path(output))
+                        verify = inspect_pdf_file(output)
+                        if not verify["is_valid_pdf"]:
+                            raise FileNotFoundError(f"Downloaded PDF could not be verified at destination: {output}")
+                        attempt["status"] = "success"
+                        attempt["message"] = "Downloaded and validated as PDF."
+                        return attempt, None
 
-                tmp_path.unlink(missing_ok=True)
-                attempt["status"] = "invalid-pdf"
-                attempt["message"] = (
-                    f"Downloaded file failed validation: header_ok={report['header_ok']}, "
-                    f"size_bytes={report['size_bytes']}."
-                )
-            except Exception as exc:
-                tmp_path.unlink(missing_ok=True)
-                attempt["status"] = "exception"
-                attempt["message"] = f"{type(exc).__name__}: {exc}"
+                    tmp_path.unlink(missing_ok=True)
+                    attempt["status"] = "invalid-pdf"
+                    attempt["message"] = (
+                        f"Downloaded file failed validation: header_ok={report['header_ok']}, "
+                        f"size_bytes={report['size_bytes']}."
+                    )
+                except Exception as exc:
+                    tmp_path.unlink(missing_ok=True)
+                    attempt["status"] = "exception"
+                    attempt["message"] = f"{type(exc).__name__}: {exc}"
 
-            if retry < DOWNLOAD_RETRIES:
-                time.sleep(1.2 ** retry)
+                if retry < DOWNLOAD_RETRIES:
+                    time.sleep(1.2 ** retry)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
     return attempt, None
 
@@ -593,7 +675,7 @@ def try_download_candidate(url: str, output: Path) -> Tuple[dict, Optional[str]]
 def copy_local_pdf(local_pdf: Path, output: Path) -> dict:
     output.parent.mkdir(parents=True, exist_ok=True)
     if local_pdf.resolve() != output.resolve():
-        shutil.copy2(local_pdf, output)
+        copy_file_safe(local_pdf, output)
     report = inspect_pdf_file(output)
     if not report["is_valid_pdf"]:
         raise SystemExit(
@@ -654,7 +736,7 @@ def ensure_pdf_asset(metadata: dict, original_input: str, local_pdf: Optional[Pa
 def resolve_input(input_value: str, title: Optional[str], authors: Optional[str]) -> Tuple[dict, Optional[Path], Optional[str]]:
     value = input_value.strip().strip('"')
     local = Path(value)
-    if local.exists() and local.suffix.lower() == ".pdf":
+    if local.suffix.lower() == ".pdf" and path_exists_safe(local):
         return {
             "paper_id": local.stem,
             "title": title or local.stem,
@@ -753,6 +835,23 @@ def find_latest_markdown(mineru_output: Path) -> Optional[Path]:
     return md_files[0] if md_files else None
 
 
+def create_junction(link_path: Path, target_path: Path) -> None:
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    if link_path.exists():
+        remove_junction(link_path)
+    command = f'cmd /c mklink /J "{link_path}" "{target_path}"'
+    result = subprocess.run(command, text=True, capture_output=True, shell=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError((result.stderr or result.stdout or "mklink failed").strip())
+
+
+def remove_junction(link_path: Path) -> None:
+    if not link_path.exists():
+        return
+    command = f'cmd /c rmdir "{link_path}"'
+    subprocess.run(command, text=True, capture_output=True, shell=True, timeout=30)
+
+
 def standardize_mineru_markdown(raw_md: Optional[Path]) -> Optional[Path]:
     if not raw_md or not raw_md.exists():
         return raw_md
@@ -767,21 +866,96 @@ def standardize_mineru_markdown(raw_md: Optional[Path]) -> Optional[Path]:
     return target
 
 
-def run_mineru(pdf_path: Path, mineru_output: Path, config: dict) -> Tuple[str, Optional[Path], List[dict]]:
+def standardize_mineru_tree(mineru_output: Path, paper_stem: str) -> Optional[Path]:
+    if not mineru_output.exists():
+        return None
+    md_files = sorted(mineru_output.rglob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not md_files:
+        return None
+    raw_md = md_files[0]
+    auto_dir = raw_md.parent
+    paper_dir = auto_dir.parent
+    normalized_stem = compact_slug(paper_stem, fallback="paper", max_len=40)
+    target_dir = mineru_output / normalized_stem
+    if paper_dir.name != normalized_stem:
+        if target_dir.exists():
+            shutil.rmtree(target_dir)
+        shutil.move(str(paper_dir), str(target_dir))
+        paper_dir = target_dir
+        auto_dir = paper_dir / "auto"
+        raw_md = auto_dir / raw_md.name
+    target_md = auto_dir / f"{normalized_stem}.md"
+    if raw_md.exists() and raw_md.name != target_md.name:
+        if target_md.exists():
+            target_md.unlink()
+        raw_md.rename(target_md)
+        raw_md = target_md
+    for suffix in [
+        "_content_list.json",
+        "_content_list_v2.json",
+        "_layout.pdf",
+        "_middle.json",
+        "_model.json",
+        "_origin.pdf",
+        "_span.pdf",
+    ]:
+        new = auto_dir / f"{normalized_stem}{suffix}"
+        matching = sorted(
+            [path for path in auto_dir.iterdir() if path.is_file() and path.name.endswith(suffix)],
+            key=lambda path: (path.name != new.name, len(path.name)),
+        )
+        if not matching:
+            continue
+        primary = matching[0]
+        if primary.name != new.name:
+            if new.exists():
+                new.unlink()
+            primary.rename(new)
+        for stale in matching[1:]:
+            if stale.exists():
+                stale.unlink()
+    for child in mineru_output.iterdir():
+        if child.is_dir() and child.name != normalized_stem:
+            shutil.rmtree(child, ignore_errors=True)
+    return raw_md if raw_md.exists() else None
+
+
+def run_mineru(pdf_path: Path, mineru_output: Path, config: dict, paper_stem: str) -> Tuple[str, Optional[Path], List[dict]]:
     mineru_output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     attempts: List[dict] = []
     mineru_root = guess_mineru_root(config)
+    temp_root = Path(tempfile.mkdtemp(prefix="paper_ingest_link_"))
+    staged_pdf = temp_root / "paper.pdf"
+    output_for_run = temp_root / "mineru_out"
+    output_for_run.mkdir(parents=True, exist_ok=True)
+    copy_file_safe(pdf_path, staged_pdf)
+
+    def collect_from_temp_output() -> Optional[Path]:
+        raw_md_temp = standardize_mineru_tree(output_for_run, paper_stem) or find_latest_markdown(output_for_run)
+        if not raw_md_temp or not raw_md_temp.exists():
+            return None
+        alias_map = extract_figure_alias_map(read_text(raw_md_temp))
+        image_aliases_for_md = consolidate_mineru_images(raw_md_temp, output_for_run, alias_map)
+        rewrite_markdown_image_refs(raw_md_temp, image_aliases_for_md)
+        raw_md_temp = standardize_mineru_tree(output_for_run, paper_stem) or raw_md_temp
+        cleanup_stale_mineru_dirs(output_for_run, raw_md_temp.parent.parent.name)
+        reset_mineru_output(mineru_output)
+        copy_tree_safe(output_for_run, mineru_output)
+        raw_md_final = standardize_mineru_tree(mineru_output, paper_stem) or find_latest_markdown(mineru_output)
+        if raw_md_final and raw_md_final.exists():
+            cleanup_stale_mineru_dirs(mineru_output, raw_md_final.parent.parent.name)
+        return raw_md_final
 
     commands: List[Tuple[List[str], Optional[Path], Dict[str, str], str]] = []
     if shutil.which("mineru"):
-        commands.append((["mineru", "-p", str(pdf_path), "-o", str(mineru_output), "-b", "pipeline"], None, env.copy(), "cli"))
+        commands.append((["mineru", "-p", str(staged_pdf), "-o", str(output_for_run), "-b", "pipeline"], None, env.copy(), "cli"))
 
     if mineru_root:
         env_with_root = env.copy()
         env_with_root["PYTHONPATH"] = str(mineru_root) + os.pathsep + env_with_root.get("PYTHONPATH", "")
         commands.append((
-            [sys.executable, "-m", "mineru.cli.client", "-p", str(pdf_path), "-o", str(mineru_output), "-b", "pipeline"],
+            [sys.executable, "-m", "mineru.cli.client", "-p", str(staged_pdf), "-o", str(output_for_run), "-b", "pipeline"],
             mineru_root,
             env_with_root,
             "module",
@@ -796,37 +970,40 @@ def run_mineru(pdf_path: Path, mineru_output: Path, config: dict) -> Tuple[str, 
             "message": "Neither `mineru` CLI nor configured `mineru_root` is available.",
         })
 
-    for cmd, cwd, cmd_env, kind in commands:
-        returncode, output = run_command(cmd, cwd, cmd_env)
-        attempts.append({
-            "kind": kind,
-            "command": cmd,
-            "cwd": str(cwd) if cwd else None,
-            "returncode": returncode,
-            "message": output[-3000:],
-        })
-        raw_md = find_latest_markdown(mineru_output)
-        if returncode == 0 and raw_md:
+    try:
+        for cmd, cwd, cmd_env, kind in commands:
+            returncode, output = run_command(cmd, cwd, cmd_env)
+            attempts.append({
+                "kind": kind,
+                "command": cmd,
+                "cwd": str(cwd) if cwd else None,
+                "returncode": returncode,
+                "message": output[-3000:],
+            })
+            raw_md = collect_from_temp_output()
+            if returncode == 0 and raw_md:
+                return "success", raw_md, attempts
+
+        raw_md = collect_from_temp_output()
+        if raw_md:
+            attempts.append({
+                "kind": "post-check",
+                "command": ["find_latest_markdown"],
+                "cwd": str(output_for_run),
+                "returncode": 0,
+                "message": f"Found Markdown after command failure: {raw_md}",
+            })
             return "success", raw_md, attempts
 
-    raw_md = find_latest_markdown(mineru_output)
-    if raw_md:
-        attempts.append({
-            "kind": "post-check",
-            "command": ["find_latest_markdown"],
-            "cwd": str(mineru_output),
-            "returncode": 0,
-            "message": f"Found Markdown after command failure: {raw_md}",
-        })
-        return "success", raw_md, attempts
-
-    last = attempts[-1]["message"] if attempts else "unknown MinerU error"
-    status = (
-        "failed: no MinerU Markdown generated. "
-        f"Checked output={mineru_output}. Last error={last}. "
-        "Please verify `mineru` is installed or configure `mineru_root` in research_interests.yaml."
-    )
-    return status, None, attempts
+        last = attempts[-1]["message"] if attempts else "unknown MinerU error"
+        status = (
+            "failed: no MinerU Markdown generated. "
+            f"Checked output={mineru_output}. Last error={last}. "
+            "Please verify `mineru` is installed or configure `mineru_root` in research_interests.yaml."
+        )
+        return status, None, attempts
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def read_text(path: Path) -> str:
@@ -847,26 +1024,53 @@ def extract_abstract(text: str) -> Optional[str]:
 def extract_title_authors_from_markdown(md_path: Optional[Path]) -> dict:
     if not md_path or not md_path.exists():
         return {}
-    lines = [line.strip() for line in read_text(md_path).splitlines()[:30]]
+    md_text = read_text(md_path)
+    lines = [line.strip() for line in md_text.splitlines()[:80]]
     non_empty = [line for line in lines if line]
     if not non_empty:
         return {}
 
-    title = non_empty[0]
-    title = re.sub(r"^#\s*", "", title).strip()
-    authors = None
-    for line in non_empty[1:8]:
+    def should_skip(line: str) -> bool:
         lower = line.lower()
-        if "abstract" in lower or line.startswith("##"):
-            break
-        if len(line.split()) <= 20 and not re.search(r"(introduction|摘要|abstract)", lower):
-            authors = line.strip()
-            break
+        return (
+            line.startswith("![](")
+            or line.startswith("##")
+            or bool(re.fullmatch(r"https?://\S+", line))
+            or lower.startswith("figure ")
+            or lower.startswith("fig.")
+            or "proceedings of" in lower
+            or "open access to the proceedings" in lower
+            or "sponsored by" in lower
+        )
+
+    title = None
+    authors = None
+    for idx, line in enumerate(non_empty[:24]):
+        candidate = re.sub(r"^#\s*", "", line).strip()
+        if not candidate or should_skip(candidate):
+            continue
+        if len(candidate.split()) < 4:
+            continue
+        title = candidate
+        for probe in non_empty[idx + 1: idx + 10]:
+            probe = re.sub(r"^#\s*", "", probe).strip()
+            lower = probe.lower()
+            if not probe or should_skip(probe):
+                continue
+            if "abstract" in lower:
+                break
+            if len(probe.split()) <= 40 and not re.search(r"(introduction|abstract)", lower):
+                authors = re.sub(r"\s+", " ", probe).strip()
+                break
+        break
+
+    if title is None:
+        title = re.sub(r"^#\s*", "", non_empty[0]).strip()
 
     return {
         "title": title or None,
         "authors": authors or None,
-        "abstract": extract_abstract(read_text(md_path)),
+        "abstract": extract_abstract(md_text),
     }
 
 
@@ -935,16 +1139,125 @@ def rename_images(image_dir: Path, alias_map: Optional[Dict[str, str]] = None) -
         if re.fullmatch(r"fig\d+[a-z]?(?:-[a-z0-9-]+)?", stem, re.I):
             records.append({"original": path.name, "alias": path.name, "path": str(path)})
             continue
-        alias = alias_map.get(path.name, f"fig{counter:02d}{path.suffix.lower()}")
+        semantic_alias = alias_map.get(path.name)
+        base_alias = f"fig{counter:02d}{path.suffix.lower()}"
+        alias = base_alias
         counter += 1
         target = path.with_name(alias)
         while target.exists():
-            alias = f"fig{counter:02d}{path.suffix.lower()}"
+            base_alias = f"fig{counter:02d}{path.suffix.lower()}"
+            alias = base_alias
             counter += 1
             target = path.with_name(alias)
         path.rename(target)
         records.append({"original": path.name, "alias": target.name, "path": str(target)})
+        if semantic_alias and semantic_alias != target.name:
+            semantic_target = target.with_name(semantic_alias)
+            if not semantic_target.exists():
+                shutil.copy2(target, semantic_target)
+                records.append({"original": target.name, "alias": semantic_target.name, "path": str(semantic_target)})
     return records
+
+
+def file_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def next_fig_alias(counter: int, suffix: str) -> str:
+    return f"fig{counter:02d}{suffix.lower()}"
+
+
+def consolidate_mineru_images(raw_md: Optional[Path], mineru_output: Path, alias_map: Optional[Dict[str, str]] = None) -> List[dict]:
+    if not raw_md or not raw_md.exists():
+        return []
+    alias_map = alias_map or {}
+    canonical_image_dir = raw_md.parent / "images"
+    canonical_image_dir.mkdir(parents=True, exist_ok=True)
+
+    image_files = sorted(
+        [path for path in mineru_output.rglob("*") if path.is_file() and path.suffix.lower() in IMAGE_EXTS],
+        key=lambda path: (path.parent != canonical_image_dir, path.name),
+    )
+    if not image_files:
+        return []
+
+    counter = 1
+    digest_to_canonical: Dict[str, Path] = {}
+    records: List[dict] = []
+
+    for path in image_files:
+        digest = file_sha256(path)
+        canonical = digest_to_canonical.get(digest)
+
+        if canonical is None:
+            if path.parent == canonical_image_dir and re.fullmatch(r"fig\d+[a-z]?(?:-[a-z0-9-]+)?", path.stem, re.I):
+                canonical = path
+            else:
+                alias = next_fig_alias(counter, path.suffix)
+                counter += 1
+                canonical = canonical_image_dir / alias
+                while canonical.exists():
+                    alias = next_fig_alias(counter, path.suffix)
+                    counter += 1
+                    canonical = canonical_image_dir / alias
+                if path.resolve() != canonical.resolve():
+                    shutil.move(str(path), str(canonical))
+            digest_to_canonical[digest] = canonical
+        elif path.resolve() != canonical.resolve():
+            path.unlink(missing_ok=True)
+
+        records.append({"original": path.name, "alias": canonical.name, "path": str(canonical)})
+
+    for original_name, semantic_alias in alias_map.items():
+        semantic_alias = str(semantic_alias or "").strip()
+        if not semantic_alias:
+            continue
+        base_record = next((item for item in records if item["original"] == original_name), None)
+        if not base_record:
+            continue
+        canonical = Path(str(base_record["path"]))
+        semantic_target = canonical.with_name(semantic_alias)
+        if semantic_target.name == canonical.name:
+            continue
+        if not semantic_target.exists():
+            shutil.copy2(canonical, semantic_target)
+        records.append({"original": canonical.name, "alias": semantic_target.name, "path": str(semantic_target)})
+
+    return records
+
+
+def rewrite_markdown_image_refs(md_path: Optional[Path], image_aliases: List[dict]) -> None:
+    if not md_path or not md_path.exists() or not image_aliases:
+        return
+    text = read_text(md_path)
+    updated = text
+    seen_originals = set()
+    for item in image_aliases:
+        original = str(item.get("original") or "").strip()
+        alias = str(item.get("alias") or "").strip()
+        if not original or not alias or original == alias:
+            continue
+        if original in seen_originals:
+            continue
+        seen_originals.add(original)
+        updated = updated.replace(f"images/{original}", f"images/{alias}")
+    if updated != text:
+        md_path.write_text(updated, encoding="utf-8")
+
+
+def cleanup_stale_mineru_dirs(mineru_output: Path, keep_dir_name: str) -> None:
+    if not mineru_output.exists():
+        return
+    for child in mineru_output.iterdir():
+        if child.is_dir() and child.name != keep_dir_name:
+            try:
+                shutil.rmtree(windows_long_path(child), ignore_errors=False)
+            except Exception:
+                shutil.rmtree(child, ignore_errors=True)
 
 
 def obsidian_link(path: Path, vault: Path, label: Optional[str] = None) -> str:
@@ -965,6 +1278,13 @@ def collect_image_dirs(asset_dir: Path) -> List[Path]:
         if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
             dirs.add(path.parent)
     return sorted(dirs)
+
+
+def reset_mineru_output(mineru_output: Path) -> None:
+    """Ensure each ingest run starts from a clean MinerU output tree."""
+    if mineru_output.exists():
+        shutil.rmtree(mineru_output, ignore_errors=True)
+    mineru_output.mkdir(parents=True, exist_ok=True)
 
 
 def build_assets_index(
@@ -1087,6 +1407,141 @@ def find_existing_note(title: str, vault: Path) -> Optional[Path]:
     return None
 
 
+def find_existing_asset_dir(vault: Path, asset_slug: str, title: str, source_hints: Optional[List[str]] = None) -> Optional[Path]:
+    assets_root = vault / "20_Research" / "Papers" / "_assets"
+    if not assets_root.exists():
+        return None
+
+    direct = assets_root / asset_slug
+    if direct.exists():
+        return direct
+
+    target_key = normalize_title_key(title or asset_slug)
+    hint_keys = set()
+    for hint in source_hints or []:
+        if not hint:
+            continue
+        if re.match(r"https?://", hint):
+            hint_value = Path(urllib.parse.urlparse(hint).path).stem
+        else:
+            hint_value = Path(hint).stem
+        hint_keys.add(normalize_title_key(hint_value))
+
+    for candidate in assets_root.rglob("*"):
+        if not candidate.is_dir():
+            continue
+
+        manifest_path = candidate / "ingest_manifest.json"
+        pdf_match = candidate / f"{candidate.name}.pdf"
+        mineru_dir = candidate / "mineru"
+        if not (manifest_path.exists() or pdf_match.exists() or mineru_dir.exists()):
+            continue
+
+        candidate_keys = {normalize_title_key(candidate.name)}
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                manifest = {}
+            for field in ("title", "paper_id", "source_url", "pdf_url"):
+                value = manifest.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                if field.endswith("_url"):
+                    if re.match(r"https?://", value):
+                        value = Path(urllib.parse.urlparse(value).path).stem
+                    else:
+                        value = Path(value).stem
+                candidate_keys.add(normalize_title_key(value))
+
+        if asset_slug == candidate.name or target_key in candidate_keys or candidate_keys.intersection(hint_keys):
+            return candidate
+    return None
+
+
+def choose_asset_pdf_path(asset_dir: Path, asset_slug: str) -> Path:
+    existing_pdfs = sorted(asset_dir.glob("*.pdf"))
+    if existing_pdfs:
+        return existing_pdfs[0]
+    return asset_dir / f"{asset_slug}.pdf"
+
+
+def find_existing_paper_dir(vault: Path, asset_slug: str) -> Optional[Path]:
+    assets_root = vault / "20_Research" / "Papers" / "_assets"
+    if not assets_root.exists():
+        return None
+    for candidate in assets_root.rglob(asset_slug):
+        if not candidate.is_dir():
+            continue
+        if any((candidate / name).exists() for name in ("ingest_manifest.json", "mineru")) or list(candidate.glob("*.pdf")):
+            return candidate
+    return None
+
+
+def find_existing_pdf_asset(vault: Path, title: str, source_hints: Optional[List[str]] = None) -> Optional[Path]:
+    assets_root = vault / "20_Research" / "Papers" / "_assets"
+    if not assets_root.exists():
+        return None
+
+    title_key = normalize_title_key(title) if title else ""
+    hint_keys = set()
+    for hint in source_hints or []:
+        if not hint:
+            continue
+        if re.match(r"https?://", hint):
+            hint_keys.add(normalize_title_key(Path(urllib.parse.urlparse(hint).path).stem))
+        else:
+            hint_keys.add(normalize_title_key(Path(hint).stem))
+
+    best = None
+    best_score = -1
+    for pdf in assets_root.rglob("*.pdf"):
+        score = 0
+        name_key = normalize_title_key(pdf.stem)
+        parent_key = normalize_title_key(pdf.parent.name)
+        if title_key:
+            if name_key == title_key:
+                score += 12
+            if parent_key == title_key:
+                score += 12
+        if name_key in hint_keys:
+            score += 2
+        if parent_key in hint_keys:
+            score += 2
+
+        manifest_path = pdf.parent / "ingest_manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                manifest = {}
+            manifest_title = manifest.get("title")
+            if isinstance(manifest_title, str) and normalize_title_key(manifest_title) == title_key:
+                score += 10
+            manifest_paper_id = manifest.get("paper_id")
+            if isinstance(manifest_paper_id, str) and normalize_title_key(manifest_paper_id) in hint_keys:
+                score += 2
+            for field in ("source_url", "pdf_url"):
+                value = manifest.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                if re.match(r"https?://", value):
+                    value = Path(urllib.parse.urlparse(value).path).stem
+                else:
+                    value = Path(value).stem
+                value_key = normalize_title_key(value)
+                if value_key == title_key:
+                    score += 4
+                elif value_key in hint_keys:
+                    score += 1
+
+        if score > best_score:
+            best = pdf
+            best_score = score
+
+    return best if best_score > 0 else None
+
+
 def choose_note_path(vault: Path, domain: str, title: str, existing_note: Optional[Path]) -> Path:
     if existing_note:
         return existing_note
@@ -1101,6 +1556,7 @@ def main() -> int:
     parser.add_argument("--title", default=None)
     parser.add_argument("--authors", default=None)
     parser.add_argument("--domain", default="Uncategorized")
+    parser.add_argument("--asset-dir", default=None, help="Explicit asset directory to reuse/write into")
     parser.add_argument("--vault", default=os.environ.get("OBSIDIAN_VAULT_PATH") or str(DEFAULT_VAULT))
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--skip-mineru", action="store_true")
@@ -1111,12 +1567,27 @@ def main() -> int:
     metadata, local_pdf, pdf_url = resolve_input(args.input, args.title, args.authors)
     pdf_url = pdf_url or metadata.get("pdf_url") or metadata.get("source_url")
     metadata["requested_domain"] = args.domain
-    title_seed = metadata.get("title") or metadata.get("paper_id") or "paper"
+    title_seed = metadata.get("title")
+    if is_missing(title_seed):
+        title_seed = metadata.get("paper_id") or "paper"
     asset_slug = slugify(title_seed, fallback="paper")
-    asset_dir = vault / "20_Research" / "Papers" / "_assets" / asset_slug
-    asset_dir.mkdir(parents=True, exist_ok=True)
+    if local_pdf:
+        pdf_path = local_pdf.resolve()
+        asset_dir = pdf_path.parent
+    else:
+        if args.asset_dir:
+            asset_dir = Path(args.asset_dir).resolve()
+        else:
+            existing_dir = find_existing_paper_dir(vault, asset_slug)
+            if existing_dir is not None:
+                asset_dir = existing_dir
+            else:
+                asset_dir = vault / "20_Research" / "Papers" / "_assets" / asset_slug
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = choose_asset_pdf_path(asset_dir, asset_slug)
 
-    pdf_path = asset_dir / f"{asset_slug}.pdf"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    mineru_stem = preferred_mineru_stem(metadata, pdf_path)
     if pdf_url:
         metadata["pdf_url"] = pdf_url
     pdf_download, pdf_attempts = ensure_pdf_asset(metadata, args.input, local_pdf, pdf_path)
@@ -1125,7 +1596,8 @@ def main() -> int:
     mineru_status = "skipped"
     raw_md: Optional[Path] = None
     mineru_attempts: List[dict] = []
-    preexisting_md = find_latest_markdown(asset_dir / "mineru")
+    mineru_output_dir = asset_dir / "mineru"
+    preexisting_md = find_latest_markdown(mineru_output_dir)
     if args.skip_mineru and preexisting_md:
         raw_md = preexisting_md
         mineru_status = "success"
@@ -1137,7 +1609,8 @@ def main() -> int:
             "message": f"Reused existing MinerU Markdown: {preexisting_md}",
         }]
     elif not args.skip_mineru:
-        mineru_status, raw_md, mineru_attempts = run_mineru(pdf_path, asset_dir / "mineru", config)
+        reset_mineru_output(mineru_output_dir)
+        mineru_status, raw_md, mineru_attempts = run_mineru(pdf_path, mineru_output_dir, config, mineru_stem)
     elif preexisting_md:
         raw_md = preexisting_md
         mineru_status = "success"
@@ -1170,8 +1643,10 @@ def main() -> int:
     note_path = choose_note_path(vault, domain, metadata.get("title") or asset_slug, existing_note)
     alias_map = extract_figure_alias_map(read_text(raw_md)) if raw_md and raw_md.exists() else {}
     image_aliases: List[dict] = []
-    for image_dir in collect_image_dirs(asset_dir):
-        image_aliases.extend(rename_images(image_dir, alias_map))
+    if raw_md and raw_md.exists():
+        image_aliases = consolidate_mineru_images(raw_md, asset_dir / "mineru", alias_map)
+        rewrite_markdown_image_refs(raw_md, image_aliases)
+        cleanup_stale_mineru_dirs(asset_dir / "mineru", raw_md.parent.parent.name)
 
     manifest_path = asset_dir / "ingest_manifest.json"
     assets_index = asset_dir / "assets.md"
